@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>野電計畫 WildVolt — 露營・車露・登山・N7 里程規劃</title>
+  <meta name="description" content="以露營、車露、登山為主軸的台灣行程規劃器：探索據點、搜尋附近美食，並用 2024 Luxgen n⁷ 短程版（滿電約 280 km）估算電動車里程與補電點。" />
+  <meta name="theme-color" content="#0c2f24" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230c2f24'/%3E%3Cpath d='M5 24 13 10l4.2 7.4L20 13l7 11z' fill='%23c9f26f'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div class="print-head">
+    <strong>野電計畫 WildVolt</strong>
+    <span>台灣戶外 × 電動車行程規劃</span>
+  </div>
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="野電計畫首頁">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><path d="M3.5 25 12 9.5l5 8.8 3-4.6L28 25z" fill="currentColor" opacity=".95"/><path d="M18.4 3.5 12.6 13h4.2l-1.4 7.2 7.2-9.8h-4.1z" fill="#0c2f24"/></svg>
+      </span>
+      <span class="brand-text">
+        <strong>野電計畫</strong>
+        <em>WILD VOLT · TAIWAN</em>
+      </span>
+    </a>
+
+    <div class="top-meta" id="topMeta">
+      <span class="meta-chip"><i class="dot dot--camp"></i>露營</span>
+      <span class="meta-chip"><i class="dot dot--car"></i>車露</span>
+      <span class="meta-chip"><i class="dot dot--hike"></i>登山</span>
+      <span class="meta-chip"><i class="dot dot--spot"></i>景點</span>
+      <span class="meta-chip"><i class="dot dot--food"></i>美食</span>
+    </div>
+
+    <div class="top-actions">
+      <button class="ev-pill" id="evPill" type="button" title="前往電動車設定">
+        <span class="ev-bolt" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M13.2 2 4.8 13.4h5.6L9.2 22l8.6-11.8h-5.5z"/></svg>
+        </span>
+        <span class="ev-pill-text">
+          <em id="evPillName">n⁷ 短程版</em>
+          <b id="evPillRange">可用里程 —</b>
+        </span>
+      </button>
+      <button class="icon-btn" id="saveBtn" type="button" title="儲存這趟行程" aria-label="儲存行程">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11l3 3v13H5z"/><path d="M8.5 4v5h7V4M8.5 20v-6h7v6"/></svg>
+      </button>
+      <button class="icon-btn" id="installBtn" type="button" title="安裝到手機" aria-label="安裝到手機" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg>
+      </button>
+      <button class="icon-btn" id="helpBtn" type="button" title="使用說明" aria-label="使用說明">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.4"/><path d="M9.7 9.3a2.4 2.4 0 0 1 4.7.6c0 1.6-2.3 1.9-2.3 3.3"/><circle cx="12" cy="16.8" r=".9" fill="currentColor" stroke="none"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <aside class="panel" aria-label="規劃面板">
+      <div class="tabs" role="tablist" aria-label="規劃功能">
+        <button class="tab is-active" role="tab" aria-selected="true" aria-controls="panel-explore" data-view="explore" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.2"/><path d="M15.6 15.6 20 20"/></svg><span>探索</span>
+        </button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="panel-trip" data-view="trip" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><path d="M8.2 18H13a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h6.8"/></svg><span>行程</span><em class="tab-badge" id="tripBadge" hidden>0</em>
+        </button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="panel-ev" data-view="ev" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.8 2.5 5.5 13h5l-1 8.5 7.9-11h-5.1z"/></svg><span>電動車</span>
+        </button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="panel-food" data-view="food" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5h16a8 8 0 0 1-16 0Z"/><path d="M8 8.2c0-1.4 1.2-1.7 1.2-3M12 8.2c0-1.4 1.2-1.7 1.2-3M16 8.2c0-1.4 1.2-1.7 1.2-3"/></svg><span>美食</span>
+        </button>
+      </div>
+
+      <div class="panel-body" id="panelBody">
+        <!-- ============ 探索 ============ -->
+        <section class="view" id="panel-explore" role="tabpanel" aria-labelledby="tab-explore">
+          <div class="view-head">
+            <p class="kicker">STEP 01 · 找地方</p>
+            <h1>今晚，睡在哪座山腳下？</h1>
+            <p class="lede">從露營區、車泊點到登山口，挑選據點加入行程，系統會自動估算 n⁷ 的電量與補電點。</p>
+          </div>
+
+          <label class="search-box" for="searchInput">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.2"/><path d="m15.6 15.6 4.4 4.4"/></svg>
+            <input id="searchInput" type="search" placeholder="搜尋棚集山、隙頂、合歡山、運動公園、車泊…" autocomplete="off" spellcheck="false" />
+            <kbd>/</kbd>
+          </label>
+
+          <div class="chip-row" id="catChips" role="group" aria-label="據點類型"></div>
+          <div class="chip-row chip-row--sub" id="partnerKinds" role="group" aria-label="特約點類型" hidden></div>
+
+          <div class="filter-row">
+            <label class="select-wrap">
+              <span>區域</span>
+              <select id="regionSelect">
+                <option value="all">全台灣</option>
+              </select>
+            </label>
+            <label class="select-wrap">
+              <span>排序</span>
+              <select id="sortSelect">
+                <option value="rating">評價優先</option>
+                <option value="alt">海拔高→低</option>
+                <option value="name">名稱</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="list-head">
+            <span id="poiCount">—</span>
+            <button class="link-btn" id="fitAllBtn" type="button">看全部在地圖上</button>
+          </div>
+          <div class="mountain-helper-wrap" id="mountainHelperWrap" hidden></div>
+          <div class="live-block" id="livePoiWrap" hidden></div>
+          <div class="poi-list" id="poiList"></div>
+          <p class="data-note" id="dataNote"></p>
+        </section>
+
+        <!-- ============ 行程 ============ -->
+        <section class="view" id="panel-trip" role="tabpanel" aria-labelledby="tab-trip" hidden>
+          <div class="view-head">
+            <p class="kicker">STEP 02 · 串路線</p>
+            <h2>把想去的地方，串成一條剛好的路線</h2>
+            <p class="lede">里程以直線距離加道路係數估算，可再向 OSRM 取得實際道路里程。</p>
+          </div>
+
+          <div class="start-block">
+            <label class="field-inline" for="startSelect">
+              <span class="field-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/></svg>
+              </span>
+              <span class="field-body">
+                <span class="field-label">出發地</span>
+                <select id="startSelect"></select>
+              </span>
+            </label>
+            <button class="locate-btn" id="locateBtn" type="button" title="使用目前位置">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="5.2"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>
+              <span>定位</span>
+            </button>
+          </div>
+
+          <div class="dest-reserve-block" id="destReserveBlock">
+            <div class="dest-reserve-head">
+              <span>車宿／終點預計要留多少電？</span>
+              <b id="destReserveVal">30%</b>
+            </div>
+            <input type="range" id="destReserveRange" min="10" max="60" step="5" aria-label="終點預留電量" />
+            <div class="dest-reserve-btns" role="group" aria-label="終點預留電量快速設定">
+              <button type="button" data-dest="20">留 20%<small>一般回程</small></button>
+              <button type="button" data-dest="30">留 30%<small>車宿建議</small></button>
+              <button type="button" data-dest="40">留 40%<small>冷暖氣過夜</small></button>
+              <button type="button" data-dest="50">留 50%<small>深度車宿</small></button>
+            </div>
+            <p class="dest-reserve-hint" id="destReserveHint">加入車宿或露營點時，系統會先詢問預計留在車宿點的電量，並自動規劃在山下（如嘉義中埔）補完電再上山。</p>
+            <label class="dest-reserve-mode">
+              <span>上山前山下補電策略（N7 快充優先）</span>
+              <select id="baseModeSelect" aria-label="山下補電模式">
+                <option value="auto">智能規劃：山上無快充或低於安全緩衝時，在山下補飽再上山（推薦）</option>
+                <option value="always">強制山下補電：只要上高山車宿，一律在山下最後快充補滿再上山</option>
+                <option value="need">僅在不足時補：抵達電量低於預留電量時才在山下補</option>
+                <option value="off">不預排山下補電：僅依一般沿途或目的地補電</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="route-mode-block" id="routeModeBlock">
+            <div class="route-mode-head">
+              <span>走法</span>
+              <span class="route-mode-note" id="routeModeNote"></span>
+            </div>
+            <div class="route-mode-btns" role="group" aria-label="走法選擇">
+              <button type="button" data-route="auto">自動估算<small>OSRM／直線估算</small></button>
+              <button type="button" data-route="nh1">國道一號<small>中山高</small></button>
+              <button type="button" data-route="nh3">國道三號<small>福爾摩沙高速</small></button>
+              <button type="button" data-route="local">一般道路<small>不走國道</small></button>
+            </div>
+            <div id="routeCompare" class="route-compare"></div>
+            <div id="highwayStopsWrap" class="highway-stops-wrap"></div>
+          </div>
+
+          <div class="day-plan-block" id="dayPlanBlock">
+            <div class="day-plan-head">
+              <span>出遊天數</span>
+              <label class="day-plan-days">
+                <select id="tripDaysSelect" aria-label="出遊天數">
+                  <option value="1">1 天（當天來回）</option>
+                  <option value="2">2 天 1 夜</option>
+                  <option value="3">3 天 2 夜</option>
+                  <option value="4">4 天 3 夜</option>
+                  <option value="5">5 天 4 夜</option>
+                  <option value="6">6 天 5 夜</option>
+                  <option value="7">7 天 6 夜</option>
+                </select>
+              </label>
+            </div>
+            <label class="day-plan-return">
+              <input type="checkbox" id="returnTripCheck" />
+              <span>加入回程：最後一天回到出發地（回程里程、耗電與補電都會算進去）</span>
+            </label>
+            <p class="day-plan-hint">每站是第幾天到達，可在下方「行程站點」每站旁邊的「第幾天」選單調整；沒調整的站會跟著前一站走。</p>
+          </div>
+
+          <div class="sample-block">
+            <span class="block-label">快速範例</span>
+            <div class="sample-row" id="sampleTrips"></div>
+          </div>
+
+          <div class="trip-actions">
+            <button class="primary-btn" id="osrmBtn" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V6.5A2.5 2.5 0 0 1 6.5 4H18l-3 4 3 4H6.5"/></svg>
+              取得實際道路里程
+            </button>
+            <button class="ghost-btn" id="exportBtn" type="button">匯出</button>
+            <button class="ghost-btn" id="clearBtn" type="button">清空</button>
+          </div>
+          <p class="osrm-status" id="osrmStatus" hidden></p>
+
+          <div id="tripStats" class="stats-grid"></div>
+          <div id="batteryCard" class="battery-card"></div>
+
+          <div class="section-head">
+            <h3>行程站點</h3>
+            <span id="stopCount" class="section-count">0 站</span>
+          </div>
+          <ol class="stop-list" id="stopList"></ol>
+
+          <div class="section-head">
+            <h3>附近可車露地點 ＆ 順遊景點（運動公園・熱門景點）</h3>
+            <button class="link-btn" id="liveSpotBtn" type="button">OSM 搜更多公園／景點</button>
+          </div>
+          <div id="tripNearbyWrap" class="trip-nearby-wrap"></div>
+
+          <div class="section-head">
+            <h3>分段里程與電量</h3>
+            <span class="section-hint">保守估算，不計下坡回充</span>
+          </div>
+          <div class="leg-list" id="legList"></div>
+
+          <div class="section-head">
+            <h3>上山前檢查（山下補電）</h3>
+          </div>
+          <div id="baseCheckWrap" class="base-check-wrap"></div>
+
+          <div class="section-head">
+            <h3>補電建議</h3>
+            <span class="section-count" id="chargeCount">0 次</span>
+          </div>
+          <div id="chargePlan" class="charge-plan"></div>
+
+          <div class="section-head">
+            <h3>分日行程</h3>
+            <span class="section-hint">依每站的「第幾天」分組，含夜宿點與回程</span>
+          </div>
+          <div id="dayPlanWrap" class="day-plan-wrap"></div>
+
+          <div id="tripWarnings" class="warn-list"></div>
+
+          <div id="savedWrap"></div>
+
+          <div id="printSheet" class="print-sheet" aria-hidden="true"></div>
+
+          <div class="trip-foot">
+            <button class="ghost-btn" id="printBtn" type="button">列印行程</button>
+            <button class="ghost-btn" id="saveBtn2" type="button">儲存到瀏覽器</button>
+          </div>
+        </section>
+
+        <!-- ============ 電動車 ============ -->
+        <section class="view" id="panel-ev" role="tabpanel" aria-labelledby="tab-ev" hidden>
+          <div class="view-head">
+            <p class="kicker">STEP 03 · 算電量</p>
+            <h2>n⁷ 跑得到嗎？先看真實里程</h2>
+            <p class="lede">先在「我的車」新增你的車：型號、電池容量、標示總里程、一般道路／高速／爬坡每度電幾公里。行程就用這台車的數字算，補電點以該車接頭（n⁷ 為 CCS1）為主。</p>
+          </div>
+          <div id="evPanel"></div>
+        </section>
+
+        <!-- ============ 美食 ============ -->
+        <section class="view" id="panel-food" role="tabpanel" aria-labelledby="tab-food" hidden>
+          <div class="view-head">
+            <p class="kicker">STEP 04 · 吃什麼</p>
+            <h2>方圓 15 公里，吃一頓在地的</h2>
+            <p class="lede">選一個據點作為圓心，搜尋半徑內的美食；也可即時查詢 OpenStreetMap 的店家。</p>
+          </div>
+
+          <label class="select-wrap select-block" for="foodAnchor">
+            <span>搜尋圓心</span>
+            <select id="foodAnchor"></select>
+          </label>
+
+          <div class="chip-row" id="radiusChips" role="group" aria-label="搜尋半徑"></div>
+          <div class="chip-row" id="kindChips" role="group" aria-label="美食類型"></div>
+
+          <div class="list-head">
+            <span id="foodCount">—</span>
+            <button class="link-btn" id="liveFoodBtn" type="button">OSM 即時搜尋</button>
+          </div>
+          <p class="food-status" id="foodStatus" hidden></p>
+          <div class="food-list" id="foodList"></div>
+          <p class="data-note">半徑以直線距離計算；營業時間與價位為示範資料，請以店家公告為準。</p>
+        </section>
+      </div>
+
+      <div class="panel-foot">
+        <span class="foot-dot" aria-hidden="true"></span>
+        <span>N7 CCS1 · 里程為估值，請以實車為準</span>
+      </div>
+    </aside>
+
+    <section class="mapwrap" aria-label="地圖">
+      <div id="map"></div>
+
+      <div class="map-top">
+        <div class="map-toggles">
+          <button class="map-toggle" id="terrainBtn" type="button" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 19 9 8l4 6.5L15.5 11 21 19z"/></svg>
+            地形圖
+          </button>
+          <button class="map-toggle" id="chargerBtn" type="button" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2.5 5.8 13h5l-1 8.5L17.6 10h-5z"/></svg>
+            充電站
+          </button>
+        </div>
+        <div class="map-count" id="mapCount">—</div>
+      </div>
+
+      <div class="poi-card" id="poiCard" hidden>
+        <button class="poi-card-close" id="poiCardClose" type="button" aria-label="關閉據點資訊">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+        <div id="poiCardBody"></div>
+      </div>
+
+      <div class="map-legend">
+        <span><i class="dot dot--camp"></i>露營</span>
+        <span><i class="dot dot--car"></i>車露</span>
+        <span><i class="dot dot--hike"></i>登山</span>
+        <span><i class="dot dot--spot"></i>景點</span>
+        <span><i class="dot dot--food"></i>美食</span>
+        <span><i class="dot dot--charge"></i>充電</span>
+      </div>
+
+      <div class="map-fallback" id="mapFallback" hidden>
+        <strong>地圖需要網路連線</strong>
+        <p>清單與里程計算仍可離線使用。請連線後重新整理以載入圖磚。</p>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+
+  <div class="modal" id="helpModal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+      <button class="poi-card-close" id="helpClose" type="button" aria-label="關閉說明">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+      <p class="kicker">使用說明</p>
+      <h2 id="helpTitle">怎麼用這張地圖規劃一趟山旅？</h2>
+      <ol class="help-steps">
+        <li><b>探索</b>：用類型、區域或關鍵字找據點，按「加入行程」放進路線。</li>
+        <li><b>行程</b>：設定出發地、調整順序，查看每一段的里程、爬升與抵達電量。</li>
+        <li><b>電動車</b>：確認車款與用車條件，系統會把 280 km 的基準里程依情境打折。</li>
+        <li><b>美食</b>：以任一站點為圓心，找半徑內的小吃與餐廳，順路就加進行程。</li>
+      </ol>
+      <div class="help-note">
+        <strong>里程算法</strong>
+        <p>有效里程＝滿電里程 × 氣溫 × 空調 × 載重 × 路況 × 天候；可用里程再扣除保留電量。每段另加計爬升耗能（約 0.006 kWh／公尺），下坡回充不計入，屬於保守估計。</p>
+      </div>
+      <div class="help-note">
+        <strong>放到 Android 手機</strong>
+        <p>這個網頁已做成 PWA（可安裝的網頁 App）：用 HTTPS 架站後（例如 GitHub Pages、Netlify），在 Android Chrome 開啟網址，點右上 ⋮ →「加到主畫面」或「安裝應用程式」，就會出現在主畫面、可以全螢幕離線開 App 殼；地圖圖磚與即時里程仍需網路。只在自家區網用電腦開 4173 的話，手機也能加到主畫面當捷徑，但不算完整 PWA，離線殼不會生效。</p>
+      </div>
+      <div class="help-note">
+        <strong>資料與安全</strong>
+        <p>所有座標、營業資訊與充電樁皆為示範資料。車泊與野營規定各縣市、各風景區不同，出發前務必確認合法性、路況與天候；高山行程請告知留守人並攜帶足夠保暖裝備。</p>
+      </div>
+      <button class="primary-btn" id="helpOk" type="button">開始規劃</button>
+    </div>
+  </div>
+
+  <!-- 車宿／露營點預留電量與山下補電智能詢問視窗 -->
+  <div class="modal" id="reserveModal" hidden>
+    <div class="modal-card reserve-modal-card" role="dialog" aria-modal="true" aria-labelledby="reserveModalTitle">
+      <button class="poi-card-close" id="reserveModalClose" type="button" aria-label="關閉設定">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+      <p class="kicker" id="reserveModalKicker">SMART CHARGE PLANNER · 智能車宿留電與山下補電</p>
+      <h2 id="reserveModalTitle">預計在車宿點要留多少電？</h2>
+      <p class="reserve-modal-desc" id="reserveModalDesc"></p>
+
+      <div class="reserve-modal-control">
+        <div class="dest-reserve-head">
+          <span>預計留在車宿／露營點的電量</span>
+          <b id="modalReserveVal">30%</b>
+        </div>
+        <input type="range" id="modalReserveRange" min="10" max="60" step="5" aria-label="預計留在車宿點的電量" />
+        <div class="dest-reserve-btns" id="modalReserveBtns" role="group" aria-label="車宿點留電快速選擇">
+          <button type="button" data-modal-dest="20">留 20%<small>僅留回程</small></button>
+          <button type="button" data-modal-dest="30" class="is-on">留 30%<small>車宿標準</small></button>
+          <button type="button" data-modal-dest="40">留 40%<small>冷暖氣過夜</small></button>
+          <button type="button" data-modal-dest="50">留 50%<small>V2L＋隔天繞山</small></button>
+        </div>
+      </div>
+
+      <label class="dest-reserve-mode" style="margin-top:10px">
+        <span>上山前補電策略（以 N7 CCS1 快充為主）</span>
+        <select id="modalBaseModeSelect">
+          <option value="auto">智能規劃：在山下快充站補飽電再上山（推薦）</option>
+          <option value="always">強制山下補電：上山前一律在山下最後快充補滿</option>
+          <option value="need">僅在不足時補：抵達電量低於預留電量才補</option>
+        </select>
+      </label>
+
+      <div class="reserve-modal-preview" id="reserveModalPreview"></div>
+
+      <div class="reserve-modal-actions">
+        <button class="primary-btn" id="reserveModalConfirm" type="button">確認留電並查看行程規劃</button>
+        <button class="ghost-btn" id="reserveModalSkip" type="button">繼續挑選其他據點</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script src="js/data-core.js"></script>
+  <script src="js/data-camp.js"></script>
+  <script src="js/data-hike.js"></script>
+  <script src="js/data-food.js"></script>
+  <script src="js/data-partner.js"></script>
+  <script src="js/data-chargers-lux.js"></script>
+  <script src="js/data-highway.js"></script>
+  <script src="js/data-chargers.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/planner.js"></script>
+  <script>
+    (function () {
+      let deferred = null;
+      const btn = document.getElementById("installBtn");
+      window.addEventListener("beforeinstallprompt", (e) => {
+        e.preventDefault();
+        deferred = e;
+        if (btn) btn.hidden = false;
+      });
+      btn?.addEventListener("click", async () => {
+        if (!deferred) return;
+        deferred.prompt();
+        await deferred.userChoice.catch(() => {});
+        deferred = null;
+        btn.hidden = true;
+      });
+      window.addEventListener("appinstalled", () => { if (btn) btn.hidden = true; });
+    })();
+  </script>
+  <script>
+    if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("sw.js").catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>
