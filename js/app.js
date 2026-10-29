@@ -1886,17 +1886,20 @@ function wireEvents() {
 
   $("#osrmBtn").addEventListener("click", refineOsrm);
   $("#exportBtn").addEventListener("click", exportTrip);
-  $("#clearBtn").addEventListener("click", () => {
+  const clearTrip = () => {
     if (!state.itinerary.length) { toast("行程已經是空的"); return; }
     if (!window.confirm("確定清空目前行程？")) return;
     state.itinerary = [];
     state.stopDays = {};
     state.osrm = {};
     state.selectedId = null;
+    if (state.ev) state.ev.highwayChargeId = "";
     persist();
     refreshAll();
     toast("行程已清空");
-  });
+  };
+  $("#clearBtn").addEventListener("click", clearTrip);
+  $("#clearBtn2")?.addEventListener("click", clearTrip);
 
   $("#printBtn").addEventListener("click", () => window.print());
   $("#saveBtn").addEventListener("click", saveCurrent);
