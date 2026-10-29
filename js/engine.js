@@ -20,6 +20,9 @@ const EV_DEFAULTS = {
   // 出遊天數（1–7）與是否加入回程（最後回到出發地）
   tripDays: 1,
   returnTrip: false,
+  // 過夜休息電力模式：camp-ac＝車宿開冷暖氣／露營模式（每晚約耗 10%）、
+  // no-drain＝純休息不耗電、camp-charge＝營地接電慢充補滿至 95%
+  overnightMode: "camp-ac",
   temp: 24,
   ac: "mid",
   load: "duo",
@@ -543,19 +546,63 @@ function legSpeed(leg, ev) {
  *     - 依據使用者設定的「預計留在車宿點的電量（need，如 30%）」＋「上山爬坡耗電（climbPct）」＋「山區安全與車宿緩衝」，
  *       反推在嘉義山下必須充到多少 % 再上山（若山上無 N7 DC 快充，智能建議在山下補滿至 85%～90% 再上山）。
  */
+/**
+ * 自動為各行程站點分配「第幾天」：
+ *  手動指定優先；未指定時 2 日遊以第一個車宿／露營點分界，
+ *  3 天以上按順序平均分配；最後強制單調不遞減且過夜點下一站至少隔天。
+ */
+function assignStopDays(stops, tripDays = 1, dayMap = {}) {
+  const days = clamp(Number(tripDays) || 1, 1, 7);
+  if (!Array.isArray(stops) || !stops.length) return [];
+  if (days === 1) return stops.map(() => 1);
+  const firstOvernightIdx = stops.findIndex((s) => s.cat === "car" || s.cat === "camp");
+  const day1EndIdx = firstOvernightIdx >= 0 ? firstOvernightIdx : 0;
+  const out = stops.map((s, idx) => {
+    const manual = Number(dayMap[s.id]);
+    if (Number.isFinite(manual)) return clamp(manual, 1, days);
+    if (days === 2) return idx <= day1EndIdx ? 1 : 2;
+    return clamp(Math.floor((idx / Math.max(1, stops.length)) * days) + 1, 1, days);
+  });
+  for (let i = 1; i < out.length; i++) {
+    let d = Math.max(out[i], out[i - 1]);
+    const prevIsOvernight = stops[i - 1].cat === "car" || stops[i - 1].cat === "camp";
+    const manual = Number(dayMap[stops[i].id]);
+    if (prevIsOvernight && !Number.isFinite(manual)) d = Math.max(d, out[i - 1] + 1);
+    out[i] = clamp(d, 1, days);
+  }
+  return out;
+}
+
+/** 沿途國道服務區逐站評估：到站剩餘電量、建議充到幾 %、預估時間、是否充完可抵達 */
+function evalHighwayStop({ charger, kmFromStart, legKm, climb, legDrive, departSoc, need, calc }) {
+  const km1 = kmFromStart;
+  const km2 = Math.max(0.5, legKm - km1);
+  const d1 = legEnergyDetail(km1, 0, calc.kmPerKwh, "highway");
+  const d2 = legEnergyDetail(km2, climb, calc.kmPerKwh, legDrive);
+  const e1 = d1.energy, e2 = d2.energy;
+  const socAt = departSoc - (e1 / calc.capacity) * 100;
+  const e2Pct = (e2 / calc.capacity) * 100;
+  const to = clamp(Math.ceil(Math.max(need + e2Pct + 8, socAt + 5)), 50, 96);
+  return {
+    charger, kmFromStart, km1, km2, e1, e2,
+    socAt, to, e2Pct,
+    minutes: socAt >= 0 && to > socAt ? chargeMinutes(charger, socAt, to, calc.capacity) : 0,
+    arriveIfCharged: to - e2Pct,
+    feasible: socAt >= 8 && (to - e2Pct) >= need - 2,
+  };
+}
+
 function buildTripPlan({ start, stops, ev, chargers, destReserve, stopDays }) {
   const dayMap = stopDays && typeof stopDays === "object" ? stopDays : {};
   const tripDays = clamp(Number(ev.tripDays) || 1, 1, 7);
   const returnTrip = !!ev.returnTrip;
-  // 每站生效天數：有指定就用指定天，沒指定就沿用上一站的天數（新加入的站自動跟著前一站走）
-  const effDays = [];
-  {
-    let cur = 1;
-    for (const s of stops) {
-      if (Number.isFinite(Number(dayMap[s.id]))) cur = clamp(Number(dayMap[s.id]), 1, tripDays);
-      effDays.push(cur);
-    }
-  }
+  const overnightMode = ev.overnightMode || "camp-ac";
+  // 每站生效天數（智慧分日）：
+  //  - 手動指定（每站旁「第幾天」選單）優先，限制在 1..tripDays；
+  //  - 沒指定時：1 日遊全為第 1 天；2 日遊以第一個車宿／露營點為界，
+  //    之前（含該點）為第 1 天、之後為第 2 天；3 天以上按站點順序平均分配；
+  //  - 之後再強制單調不遞減，且過夜點的下一站至少是隔天（睡一晚再出發）。
+  const effDays = assignStopDays(stops, tripDays, dayMap);
   const maxStopDay = effDays.length ? Math.max(...effDays) : 1;
   const returnDay = Math.max(maxStopDay, tripDays);
   // 回程當成最後一腿：回到出發地，需求電量用一般保留值（不是終點預留）
@@ -580,6 +627,8 @@ function buildTripPlan({ start, stops, ev, chargers, destReserve, stopDays }) {
   const charges = [];
   const warnings = [];
   const basePlans = [];
+  const overnightStays = [];
+  let prevLegDay = 1;
 
   let soc = clamp(Number(ev.startSoc) || 90, 10, 100);
   let prev = start;
@@ -598,6 +647,43 @@ function buildTripPlan({ start, stops, ev, chargers, destReserve, stopDays }) {
     // 回程時，原本的最後一站仍用終點預留（在最遠點留安全電量），回程腿本身只用一般保留值
     const need = isReturn ? reserve : ((isLast || isOvernight || (returnTrip && i === stops.length - 1)) ? destR : reserve);
     const legDay = isReturn ? stop.forceDay : (effDays[i] ?? 1);
+    /* ---- 跨日過夜休息：換天時先結算前一晚的電量變化，再開始當天行程 ---- */
+    if (i > 0 && legDay > prevLegDay) {
+      const beforeSoc = soc;
+      let afterSoc = soc;
+      let deltaKwh = 0;
+      let noteText = "";
+      const nights = Math.max(1, legDay - prevLegDay);
+      if (overnightMode === "camp-charge") {
+        afterSoc = Math.max(soc, 95);
+        deltaKwh = ((afterSoc - beforeSoc) / 100) * calc.capacity;
+        noteText = `營地過夜接電慢充（${Math.round(beforeSoc)}% → ${Math.round(afterSoc)}%）`;
+      } else if (overnightMode === "no-drain") {
+        afterSoc = soc;
+        noteText = `過夜休息不開冷暖氣（維持 ${Math.round(afterSoc)}%）`;
+      } else {
+        const drainPct = 10 * nights;
+        afterSoc = Math.max(0, soc - drainPct);
+        deltaKwh = -((beforeSoc - afterSoc) / 100) * calc.capacity;
+        noteText = `車宿過夜休息（冷暖氣／露營模式耗電約 ${drainPct}%，約 ${Math.abs(deltaKwh).toFixed(1)} 度電）`;
+        if (afterSoc < 15) {
+          warnings.push({
+            tone: "warn",
+            text: `第 ${prevLegDay} 晚在「${prev.name}」過夜耗電後，第 ${legDay} 天早上出發電量僅剩 ${Math.round(afterSoc)}%，建議前一天上山前多補一點電或當天下山後立即快充。`,
+          });
+        }
+      }
+      soc = afterSoc;
+      const stay = {
+        night: prevLegDay, day: prevLegDay, nextDay: legDay, at: prev,
+        socBefore: Math.round(beforeSoc), socAfter: Math.round(afterSoc),
+        beforeSoc: Math.round(beforeSoc), afterSoc: Math.round(afterSoc),
+        deltaKwh, mode: overnightMode, label: noteText, noteText,
+      };
+      overnightStays.push(stay);
+      if (legs[i - 1]) legs[i - 1].overnightStay = stay;
+    }
+    prevLegDay = legDay;
     const baseEst = estimateLeg(prev, stop);
     // 走法覆寫：國道走法不採用 OSRM 預設路徑（OSRM 不分國一／國三），
     // 改用國道折線里程；一般道路走法也不走高速。
@@ -620,6 +706,14 @@ function buildTripPlan({ start, stops, ev, chargers, destReserve, stopDays }) {
             charger: hs.charger,
             kmFromStart: hs.kmFromStart,
             kmFromTripStart: totalKm + hs.kmFromStart,
+          });
+        }
+        // 沿途服務區逐站評估（篩選用）：每站到站電量、建議充到幾 %、預估時間、是否可行
+        for (const hs of highwayStops.filter((h) => h.legIndex === i)) {
+          hs.eval = evalHighwayStop({
+            charger: hs.charger, kmFromStart: hs.kmFromStart,
+            legKm: est.km, climb: est.climb, legDrive,
+            departSoc: soc, need, calc,
           });
         }
       } else {
@@ -756,7 +850,7 @@ function buildTripPlan({ start, stops, ev, chargers, destReserve, stopDays }) {
         const d2 = legEnergyDetail(km2, est.climb, calc.kmPerKwh, legDrive);
         const e1 = d1.energy, e2 = d2.energy;
         const socAt = departSoc - (e1 / calc.capacity) * 100;
-        const to = Math.min(96, Math.ceil(need + (e2 / calc.capacity) * 100 + 3));
+        const to = clamp(Math.ceil(Math.max(need + (e2 / calc.capacity) * 100 + 8, socAt + 5)), 50, 96);
         if (socAt >= 0 && to > socAt + 0.5) {
           pickedHw = { charger: hs.charger, km1, km2, d1, d2, e1, e2, socAt, to };
         } else if (socAt < 0) {
@@ -766,6 +860,12 @@ function buildTripPlan({ start, stops, ev, chargers, destReserve, stopDays }) {
         }
       }
     }
+    /* ---- 國道走法自動篩選：沿途最新一個「可行」的服務區（wildvolt-3 邏輯） ---- */
+    const saPick = (routeMode === "nh1" || routeMode === "nh3") && !pickedHw
+      ? [...highwayStops.filter((h) => h.legIndex === i && h.eval)].reverse().find(
+          (h) => h.eval.feasible && h.eval.socAt >= (isReturn ? 12 : 14) && h.eval.arriveIfCharged >= need
+        )
+      : null;
     if (pickedHw) {
         const { km1, km2, d1, d2, e1, e2, socAt, to: preTo } = pickedHw;
         usedHighwayCharge = true;
@@ -911,6 +1011,31 @@ function buildTripPlan({ start, stops, ev, chargers, destReserve, stopDays }) {
       soc = basePlan.arriveIfNotCharged;
       arriveSoc = soc;
       baseHint = { charger: base.charger, dist: base.dist, soc: Math.round(basePlan.socAtBase) };
+    } else if (saPick && arriveSoc < need) {
+      /* ---- 國道服務區自動補電（已篩選的最新可行服務區） ---- */
+      const ev2 = saPick.eval;
+      const charge = {
+        charger: saPick.charger,
+        dist: haversine(saPick.charger, stop),
+        from: Math.round(ev2.socAt),
+        to: ev2.to,
+        minutes: ev2.minutes,
+        where: "highway",
+        at: stop,
+        km1: ev2.km1,
+        km2: ev2.km2,
+        e1: ev2.e1,
+        e2: ev2.e2,
+      };
+      charges.push({ legIndex: i, ...charge });
+      leg.highwayCharge = charge;
+      usedHighwayCharge = true;
+      arriveSoc = ev2.arriveIfCharged;
+      soc = arriveSoc;
+      warnings.push({
+        tone: "info",
+        text: `國道服務區自動補電：在「${saPick.charger.name}」補電 ${Math.round(ev2.socAt)}% → ${ev2.to}%（約 ${ev2.minutes} 分鐘），再開 ${Math.round(ev2.km2)} km 抵達「${stop.name}」約剩 ${Math.round(arriveSoc)}%。`,
+      });
     } else if (arriveSoc < need) {
       /* ---- 到不了保留電量：先找快充（目的地優先，其次途中），最後才用慢充 ---- */
       const isACPick = (p) => p.charger.type === "AC" || p.charger.power < 22;
@@ -1068,6 +1193,7 @@ function buildTripPlan({ start, stops, ev, chargers, destReserve, stopDays }) {
       startSoc: dLegs.length ? dLegs[0].departSoc : null,
       endSoc: lastLeg ? lastLeg.arriveSoc : null,
       overnight,
+      morningStay: overnightStays.find((s) => s.nextDay === d) || null,
       isReturnDay: dLegs.some((l) => l.isReturn),
       stops: dLegs.map((l) => l.to),
     });
@@ -1153,6 +1279,8 @@ function buildTripPlan({ start, stops, ev, chargers, destReserve, stopDays }) {
     highwayStops,
     tripDays,
     returnTrip,
+    overnightMode,
+    overnightStays,
     days,
     baseChargeMode: baseMode,
     highDest: legs.length ? !!legs[legs.length - 1].highDest : false,

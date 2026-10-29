@@ -3,7 +3,7 @@
    國道一號（中山高）／國道三號（福爾摩沙高速）走法線形與沿途服務區。
    - waypoints：國道大致線形（北→南），用來估算走國道時的里程，
      不是逐交流道精確路徑；最終里程仍以 OSRM 實測或現場為準。
-   - serviceAreaIds：北→南順序。國一、國三共 14 處服務區／休息站，
+   - serviceAreaIds：北→南順序。國一 7 處、國三 9 處服務區／休息站，
      高公局已說明 15 處服務區＋東草屯休息站皆設有快充，
      以下站點皆列為 DC 快充（實際功率與營運以現場／1968 App 為準）。
    - highwayKm：該站在國道上的約略里程（K），僅供畫面排序與顯示。
@@ -59,7 +59,7 @@ const HIGHWAY_ROUTES = [
       { name: "大鵬灣端", lat: 22.430, lng: 120.600 },
     ],
     serviceAreaIds: [
-      "ch-guanxi", "ch-sa-baoshan", "ch-xihu", "ch-qingshui",
+      "ch-sa-muzha", "ch-guanxi", "ch-sa-baoshan", "ch-xihu", "ch-qingshui",
       "ch-sa-nantou", "ch-sa-gukeng", "ch-dongshan", "ch-sa-guanmiao",
     ],
   },

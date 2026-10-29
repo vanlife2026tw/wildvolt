@@ -210,7 +210,17 @@
               <input type="checkbox" id="returnTripCheck" />
               <span>加入回程：最後一天回到出發地（回程里程、耗電與補電都會算進去）</span>
             </label>
-            <p class="day-plan-hint">每站是第幾天到達，可在下方「行程站點」每站旁邊的「第幾天」選單調整；沒調整的站會跟著前一站走。</p>
+            <div class="day-plan-head" id="overnightModeWrap">
+              <span>過夜用電</span>
+              <label class="day-plan-days">
+                <select id="overnightModeSelect" aria-label="過夜用電模式">
+                  <option value="camp-ac">車宿開冷暖氣／露營模式（每晚約耗 10%）</option>
+                  <option value="no-drain">純休息不耗電</option>
+                  <option value="camp-charge">營地接電慢充到 95%</option>
+                </select>
+              </label>
+            </div>
+            <p class="day-plan-hint">每站是第幾天到達，可在下方「行程站點」每站旁邊的「第幾天」選單調整；沒調整的站會自動分日（2 日遊以第一個車宿／露營點分界）。</p>
           </div>
 
           <div class="sample-block">

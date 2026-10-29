@@ -94,6 +94,12 @@ function renderTrip() {
   const retCheck = $("#returnTripCheck");
   if (retCheck) retCheck.checked = !!state.ev.returnTrip;
 
+  /* 過夜模式：只有 2 天以上行程才需要選 */
+  const ovSel = $("#overnightModeSelect");
+  if (ovSel) ovSel.value = state.ev.overnightMode || "camp-ac";
+  const ovWrap = $("#overnightModeWrap");
+  if (ovWrap) ovWrap.hidden = (clamp(Number(state.ev.tripDays) || 1, 1, 7) <= 1);
+
   /* 走法選擇＋路線比較＋沿途服務區（國道走法才列服務區） */
   const routeBlock = $("#routeModeBlock");
   if (routeBlock) {
@@ -148,18 +154,24 @@ function renderTrip() {
         const pickedId = state.ev.highwayChargeId || "";
         hwWrap.innerHTML = `<div class="route-compare-head">沿途服務區快充（${ROUTE_MODE_LABELS[mode]} · 點「在這裡充」就會排入充電計畫）</div>` + p.highwayStops.map((hs, idx) => {
           const leg = p.legs[hs.legIndex];
+          const ev2 = hs.eval || null;
           let socAt = null;
           if (leg && leg.highwayCharge && leg.highwayCharge.charger.id === hs.charger.id) {
             socAt = leg.highwayCharge.from;
+          } else if (ev2) {
+            socAt = ev2.socAt;
           } else if (leg) {
             socAt = leg.departSoc - (legEnergy(hs.kmFromStart, 0, p.calc.kmPerKwh, "highway") / p.calc.capacity) * 100;
           }
+          const evalText = ev2
+            ? ` · 到站約剩 ${Math.round(ev2.socAt)}% → 建議充到 ${ev2.to}%（約 ${ev2.minutes} 分鐘）${ev2.feasible ? "" : " · ⚠ 充到 96% 仍低於預留"}`
+            : (socAt !== null ? ` · 到站約剩 ${Math.round(socAt)}%` : "");
           const isPicked = hs.charger.id === pickedId;
           return `<div class="highway-stop${isPicked ? " is-picked" : ""}">
             <div class="highway-stop-main">
               <b>${idx + 1}. ${esc(hs.charger.name)}</b>
               <span>${esc(hs.charger.network)} · ${hs.charger.power} kW DC（${esc(hs.charger.connectors || "CCS1")}）${hs.charger.highwayKm ? ` · 約 ${hs.charger.highwayKm}K` : ""}</span>
-              <span>第 ${hs.legIndex + 1} 段 · 全程約 ${hs.kmFromTripStart.toFixed(1)} km${socAt !== null ? ` · 到站約剩 ${Math.round(socAt)}%` : ""}${isPicked && !(leg && leg.highwayCharge && leg.highwayCharge.charger.id === hs.charger.id) ? " · 已選，但到站電量已夠，不需補電" : ""}</span>
+              <span>第 ${hs.legIndex + 1} 段 · 全程約 ${hs.kmFromTripStart.toFixed(1)} km${evalText}${isPicked && !(leg && leg.highwayCharge && leg.highwayCharge.charger.id === hs.charger.id) ? " · 已選，但到站電量已夠，不需補電" : ""}</span>
             </div>
             <button type="button" class="mini-btn${isPicked ? " is-on" : ""}" data-pick-highway="${hs.charger.id}">${isPicked ? "已選 · 點此取消" : "在這裡充"}</button>
           </div>`;
@@ -402,6 +414,7 @@ function renderTrip() {
           <div class="day-card-route">${routeText}</div>
           <div class="day-card-meta">里程 ${fmtKm(d.km, 1)} km · 耗電 ${d.energy.toFixed(1)} 度 · 行車 ${fmtDuration(d.minutes / 60)}${d.startSoc !== null ? ` · 出發 ${fmtSoc(d.startSoc)} → 收尾 ${fmtSoc(d.endSoc)}` : ""}</div>
           <div class="day-card-meta">補電：${chargeText}</div>
+          ${d.morningStay ? `<div class="day-card-meta">🌙 前一晚在「${esc(d.morningStay.at.name)}」過夜：${esc(d.morningStay.label)}，早上出發 ${fmtSoc(d.morningStay.afterSoc)}</div>` : ""}
         </div>`;
       }).join("");
     }
@@ -470,7 +483,7 @@ function renderTrip() {
         <h3>分日行程</h3>
         <table class="print-table">
           <thead><tr><th>天</th><th>當天行程</th><th>里程</th><th>耗電</th><th>補電</th><th>夜宿／回程</th></tr></thead>
-          <tbody>${p.days.map((d) => `<tr><td>第 ${d.day} 天</td><td>${d.legs.length ? d.legs.map((l) => `${esc(l.from.name)} → ${esc(l.to.name)}`).join("；") : "（無行程）"}</td><td>${fmtKm(d.km, 1)} km</td><td>${d.energy.toFixed(1)} 度</td><td>${d.charges.length ? d.charges.map((c) => `${esc(c.charger.name)} ${Math.round(c.from)}% → ${Math.round(c.to)}%`).join("；") : "免補電"}</td><td>${d.overnight ? `夜宿 ${esc(d.overnight.name)}` : d.isReturnDay ? "回到出發地" : "不夜宿"}</td></tr>`).join("")}</tbody>
+          <tbody>${p.days.map((d) => `<tr><td>第 ${d.day} 天</td><td>${d.legs.length ? d.legs.map((l) => `${esc(l.from.name)} → ${esc(l.to.name)}`).join("；") : "（無行程）"}</td><td>${fmtKm(d.km, 1)} km</td><td>${d.energy.toFixed(1)} 度</td><td>${d.charges.length ? d.charges.map((c) => `${esc(c.charger.name)} ${Math.round(c.from)}% → ${Math.round(c.to)}%`).join("；") : "免補電"}</td><td>${d.overnight ? `夜宿 ${esc(d.overnight.name)}` : d.isReturnDay ? "回到出發地" : "不夜宿"}${d.morningStay ? `；${esc(d.morningStay.label)}` : ""}</td></tr>`).join("")}</tbody>
         </table>
         <h3>分段里程</h3>
         <table class="print-table">
@@ -1165,6 +1178,11 @@ function wirePlanner() {
   });
   $("#returnTripCheck")?.addEventListener("change", (e) => {
     state.ev.returnTrip = !!e.target.checked;
+    persist();
+    renderTrip();
+  });
+  $("#overnightModeSelect")?.addEventListener("change", (e) => {
+    state.ev.overnightMode = e.target.value || "camp-ac";
     persist();
     renderTrip();
   });

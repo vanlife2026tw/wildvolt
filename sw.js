@@ -2,7 +2,7 @@
    策略：App Shell（本機檔案）用 Cache First，離線也能開；
    圖磚／OSRM／Nominatim 等外部即時資料一律走網路（不快取），
    避免離線時拿到過期的地圖或里程。快取版本號一改就整包換新。 */
-const CACHE = "wildvolt-v2";
+const CACHE = "wildvolt-v3";
 const SHELL = [
   "./",
   "./index.html",

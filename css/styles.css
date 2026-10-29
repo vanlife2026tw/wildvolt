@@ -1453,20 +1453,20 @@ input[type="range"]::-moz-range-thumb {
   .route-mode-block, .day-plan-block, .day-plan-wrap, .dest-reserve-block, .trip-nearby-wrap, #savedWrap,
   .leg-list, .charge-plan, .battery-card, .base-check-wrap,
   #tripStats, .stop-list, .section-head, #tripWarnings, .view-head { display: none !important; }
-  .print-sheet { display: block !important; font-size: 14pt; line-height: 1.5; color: #111; }
+  .print-sheet { display: block !important; font-size: 17pt; line-height: 1.6; color: #111; }
   .print-sheet-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 3px solid #0c2f24; padding-bottom: 6px; margin-bottom: 10px; }
-  .print-sheet-head strong { font-size: 20pt; letter-spacing: 0.05em; }
-  .print-sheet-head span { font-size: 12pt; color: #444; }
-  .print-sheet-route { font-size: 16pt; font-weight: 700; margin-bottom: 8px; }
-  .print-sheet-meta { font-size: 12.5pt; color: #333; margin-bottom: 14px; }
-  .print-sheet h3 { font-size: 16pt; margin: 16px 0 8px; border-left: 6px solid #0c2f24; padding-left: 8px; }
-  .print-table { width: 100%; border-collapse: collapse; font-size: 13.5pt; }
+  .print-sheet-head strong { font-size: 24pt; letter-spacing: 0.05em; }
+  .print-sheet-head span { font-size: 14pt; color: #444; }
+  .print-sheet-route { font-size: 19pt; font-weight: 700; margin-bottom: 8px; }
+  .print-sheet-meta { font-size: 14.5pt; color: #333; margin-bottom: 14px; }
+  .print-sheet h3 { font-size: 19pt; margin: 16px 0 8px; border-left: 6px solid #0c2f24; padding-left: 8px; }
+  .print-table { width: 100%; border-collapse: collapse; font-size: 16pt; }
   .print-table th, .print-table td { border: 1px solid #999; padding: 7px 8px; text-align: left; vertical-align: top; }
   .print-table th { background: #eef3ee; }
   .print-table tr { break-inside: avoid; }
-  .print-warns { font-size: 13pt; padding-left: 20px; }
+  .print-warns { font-size: 15pt; padding-left: 20px; }
   .print-warns li { margin-bottom: 6px; }
-  .print-foot { font-size: 11.5pt; color: #555; border-top: 1px solid #999; padding-top: 8px; margin-top: 16px; }
+  .print-foot { font-size: 13pt; color: #555; border-top: 1px solid #999; padding-top: 8px; margin-top: 16px; }
   .shell { display: block; height: auto; padding: 0; }
   .panel { border: 0; box-shadow: none; background: #fff; overflow: visible; }
   .panel-body { overflow: visible; padding: 0; }

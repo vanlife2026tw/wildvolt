@@ -73,6 +73,7 @@ function loadState() {
       }
       if (!state.ev.baseChargeMode) state.ev.baseChargeMode = "auto";
       if (!state.ev.routeMode) state.ev.routeMode = "auto";
+    if (!state.ev.overnightMode) state.ev.overnightMode = "camp-ac";
       if (typeof state.ev.highwayChargeId !== "string") state.ev.highwayChargeId = "";
     }
     if (typeof saved.startId === "string") state.startId = saved.startId;
@@ -1847,6 +1848,7 @@ function wireEvents() {
     if (sample.routeMode) state.ev.routeMode = sample.routeMode;
     if (Number.isFinite(Number(sample.tripDays))) state.ev.tripDays = clamp(Number(sample.tripDays), 1, 7);
     if (typeof sample.returnTrip === "boolean") state.ev.returnTrip = sample.returnTrip;
+    if (typeof sample.overnightMode === "string") state.ev.overnightMode = sample.overnightMode;
     state.ev.baseChargerId = "";
     state.ev.highwayChargeId = "";
     state.stopDays = sample.stopDays && typeof sample.stopDays === "object" ? { ...sample.stopDays } : {};

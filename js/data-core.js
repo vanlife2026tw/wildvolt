@@ -141,6 +141,7 @@ const SAMPLE_TRIPS = [
     routeMode: "nh3",
     tripDays: 2,
     returnTrip: true,
+    overnightMode: "camp-ac",
     stopDays: { "partner-879": 1, "hike-pengjishan": 2 },
   },
   {
