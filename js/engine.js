@@ -20,6 +20,8 @@ const EV_DEFAULTS = {
   // 出遊天數（1–7）與是否加入回程（最後回到出發地）
   tripDays: 1,
   returnTrip: false,
+  // 沿途充電站（走廊式）繞道範圍 km：2／5／10／20，預設 5（只對 auto／local 走法）
+  corridorKm: 5,
   // 過夜休息電力模式：camp-ac＝車宿開冷暖氣／露營模式（每晚約耗 10%）、
   // no-drain＝純休息不耗電、camp-charge＝營地接電慢充補滿至 95%
   overnightMode: "camp-ac",
@@ -1377,6 +1379,235 @@ function nearbySpots(anchors, maxKm = 18, extra = []) {
     });
   }
   return out.sort((a, b) => a.dist - b.dist);
+}
+
+/* =========================================================
+   Phase 2 — 開車路程搜尋（rangePick／rankStays）、
+   沿途充電站（corrPick）、午餐建議（lunchNear）
+   來源概念：hark 的 roadGet／rangePick／rankStays／corrPick／nearestRests。
+   全部是新增函式，不動既有函式簽名與 buildTripPlan。
+   OSRM 公開服務：router.project-osrm.org（與 app.js refineOsrm 相同慣例，
+   route/v1/driving，overview=false，9 秒逾時，失敗重試一次）。
+   注意：refineOsrm 只存 km／climb（overview=false，沒有線形幾何），
+   所以 corrPick 的「線形」預設就是起訖直線段，並以 source 標註；
+   等未來 refineOsrm 改存 overview=full 的幾何再傳 geometry 進來。
+   ========================================================= */
+
+const OSRM_BASE = "https://router.project-osrm.org";
+/** 開車路程快取：key 為起訖座標（與 app.js legKey 同格式），避免重複打 OSRM */
+const ROAD_DIST_CACHE = new Map();
+
+function roadCacheKey(a, b) {
+  return `${Number(a.lat).toFixed(3)},${Number(a.lng).toFixed(3)}>${Number(b.lat).toFixed(3)},${Number(b.lng).toFixed(3)}`;
+}
+
+function osrmRouteUrl(a, b) {
+  return `${OSRM_BASE}/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?overview=false&alternatives=false&steps=false`;
+}
+
+/**
+ * 單次 OSRM 開車路程查詢（不含快取、不含備援）。
+ * 成功回傳 { km, minutes, source: "osrm" }；失敗拋出錯誤，由呼叫端重試／備援。
+ */
+async function osrmRoadKm(a, b, opts = {}) {
+  const fetchImpl = opts.fetchImpl || (typeof globalThis.fetch === "function" ? globalThis.fetch : null);
+  if (!fetchImpl) throw new Error("no fetch");
+  const res = await fetchImpl(osrmRouteUrl(a, b), { signal: AbortSignal.timeout(9000) });
+  if (!res.ok) throw new Error(`OSRM HTTP ${res.status}`);
+  const data = await res.json();
+  const route = data.routes && data.routes[0];
+  if (!route || !Number.isFinite(route.distance)) throw new Error("no route");
+  return {
+    km: Math.round((route.distance / 1000) * 10) / 10,
+    minutes: Math.round((route.duration / 60) * 10) / 10,
+    source: "osrm",
+  };
+}
+
+/**
+ * 開車路程（含快取＋失敗重試一次＋直線距離備援）。
+ * OSRM 兩次都失敗／離線時回傳直線估算 { km: estimateLeg, source: "straight", straight: true }，
+ * 絕不拋出、絕不回傳空白，UI 依 source 標註「直線估算」。
+ */
+async function roadKm(a, b, opts = {}) {
+  const key = roadCacheKey(a, b);
+  if (ROAD_DIST_CACHE.has(key)) return ROAD_DIST_CACHE.get(key);
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await osrmRoadKm(a, b, opts);
+      ROAD_DIST_CACHE.set(key, r);
+      return r;
+    } catch (err) { lastErr = err; }
+  }
+  // 直線備援不寫入快取：下次呼叫會再試 OSRM，網路恢復後能升級為實測路程；
+  // 只有 OSRM 成功的結果才快取。
+  const est = estimateLeg(a, b);
+  return { km: Math.round(est.km * 10) / 10, minutes: null, source: "straight", straight: true, error: String(lastErr || "") };
+}
+
+/** 同步直線距離預篩（rangePick 的第一步，也是 OSRM 回來前的即時顯示） */
+function rangePickStraight(anchor, items, radiusKm) {
+  if (!anchor || !Array.isArray(items)) return [];
+  return items
+    .filter((it) => it && Number.isFinite(Number(it.lat)) && Number.isFinite(Number(it.lng)))
+    .map((it) => ({ item: it, straightKm: haversine(anchor, it), roadKm: null, source: "straight" }))
+    .filter((r) => r.straightKm <= radiusKm)
+    .sort((a, b) => a.straightKm - b.straightKm);
+}
+
+/**
+ * 開車路程半徑搜尋（hark rangePick 簡化版）：
+ * 直線距離預篩 → OSRM 批次算開車路程 → 找不到自動擴大 2／3／5 倍 →
+ * 結果快取（ROAD_DIST_CACHE）→ 失敗重試一次（roadKm 內含）→
+ * 離線／失敗時用直線距離備援（source "straight"，UI 標「直線估算」）。
+ * 回傳 { items: [{ item, roadKm, straightKm, source }], radiusKm, source, expanded }，
+ * 找不到時 items 為 []（不拋錯，UI 顯示「半徑內無資料」而非空白）。
+ * opts: { fetchImpl, limit（OSRM 批次上限，預設 15）, dcFirst（充電站用：DC 優先） }
+ */
+async function rangePick(anchor, items, radiusKm, opts = {}) {
+  const limit = Math.max(1, Number(opts.limit) || 15);
+  const scales = [1, 2, 3, 5];
+  for (const scale of scales) {
+    const r = radiusKm * scale;
+    const pre = rangePickStraight(anchor, items, r);
+    if (!pre.length) continue;
+    const batch = pre.slice(0, limit);
+    const rows = [];
+    for (const cand of batch) {
+      const road = await roadKm(anchor, cand.item, opts);
+      rows.push({ item: cand.item, roadKm: road.km, straightKm: cand.straightKm, source: road.source });
+    }
+    // OSRM 全滅時 roadKm 已是直線備援（source "straight"），直接用它排序，不再擴大
+    const anyOsrm = rows.some((x) => x.source === "osrm");
+    rows.sort((a, b) => {
+      if (opts.dcFirst) {
+        const da = a.item.type === "DC" ? 0 : 1;
+        const db = b.item.type === "DC" ? 0 : 1;
+        if (da !== db) return da - db;
+      }
+      return a.roadKm - b.roadKm;
+    });
+    return {
+      items: rows,
+      radiusKm: r,
+      source: anyOsrm ? "osrm" : "straight",
+      expanded: scale > 1,
+    };
+  }
+  return { items: [], radiusKm: radiusKm * 5, source: "none", expanded: true };
+}
+
+/** 是否為可過夜點（營地／車露／特約車泊／澡點） */
+function isOvernightPoi(p) {
+  if (!p) return false;
+  return p.cat === "camp" || p.cat === "car" || p.cat === "bath"
+    || (p.cat === "partner" && ["car", "camp", "bath"].includes(p.partnerKind));
+}
+
+/**
+ * 過夜點排序（hark rankStays 簡化版）：rangePick ＋ 偏好類型優先。
+ * stays 省略時取 POIS＋PARTNER_POIS 的可過夜點。
+ * opts.pref: "partner"（特約優先）／"bath"（澡點優先）／"all"（不分偏好，預設）。
+ * 回傳同 rangePick 格式，每筆多 prefRank（0＝偏好類型）。
+ */
+async function rankStays(anchor, stays, radiusKm = 20, opts = {}) {
+  let pool = stays;
+  if (!Array.isArray(pool)) {
+    pool = [
+      ...(typeof POIS !== "undefined" ? POIS : []),
+      ...(typeof PARTNER_POIS !== "undefined" ? PARTNER_POIS : []),
+    ].filter(isOvernightPoi);
+  }
+  const pref = opts.pref || "all";
+  const prefRank = (it) => {
+    if (pref === "partner") return it.partner ? 0 : 1;
+    if (pref === "bath") return (it.partnerKind === "bath" || it.cat === "bath") ? 0 : 1;
+    return 0;
+  };
+  const res = await rangePick(anchor, pool, radiusKm, opts);
+  res.items = res.items
+    .map((r) => ({ ...r, prefRank: prefRank(r.item) }))
+    .sort((a, b) => (a.prefRank - b.prefRank) || (a.roadKm - b.roadKm));
+  return res;
+}
+
+/**
+ * 沿途充電站（hark corrPick 概念）：找出離當日路線繞道 rangeKm 內的充電站。
+ * segments 可傳 [{ from, to }] 或連續座標點 [{ lat, lng }, ...]（起訖直線段即為備援線形）。
+ * 幾何用橫向跨距（cross-track）估算繞道距離；DC 優先、再由近到遠。
+ * opts.geometry: 未來若傳入 OSRM 線形點列（overview=full），source 為 "line"；
+ * 未傳時以起訖直線段計算，source 為 "straight"（UI 標「路線以直線備援估算」）。
+ * 國道走法不適用（見 planner.js：國道沿用服務區逐站評估，不呼叫此函式）。
+ * 回傳 [{ charger, crossKm, alongKm, segIndex, source }]（找不到為 []）。
+ */
+function corrPick(segments, chargers, rangeKm = 5, opts = {}) {
+  const segs = [];
+  if (Array.isArray(segments) && segments.length) {
+    if (segments[0] && segments[0].from && segments[0].to) {
+      for (const s of segments) segs.push([s.from, s.to]);
+    } else if (segments.length >= 2) {
+      for (let i = 1; i < segments.length; i++) segs.push([segments[i - 1], segments[i]]);
+    }
+  }
+  if (!segs.length || !Array.isArray(chargers)) return [];
+  const source = opts.geometry ? "line" : "straight";
+  const out = [];
+  for (const c of chargers) {
+    if (!c || !Number.isFinite(Number(c.lat)) || !Number.isFinite(Number(c.lng))) continue;
+    let best = null;
+    segs.forEach(([prev, dest], segIndex) => {
+      const bx = (dest.lng - prev.lng) * 102.5;
+      const by = (dest.lat - prev.lat) * 111.0;
+      const len2 = bx * bx + by * by;
+      if (len2 < 1) return;
+      const px = (c.lng - prev.lng) * 102.5;
+      const py = (c.lat - prev.lat) * 111.0;
+      const t = (px * bx + py * by) / len2;
+      if (t < -0.05 || t > 1.05) return;
+      const cross = Math.abs(px * by - py * bx) / Math.sqrt(len2);
+      const along = Math.max(0, Math.min(1, t)) * Math.sqrt(len2);
+      if (!best || cross < best.crossKm) best = { crossKm: cross, alongKm: along, segIndex };
+    });
+    if (best && best.crossKm <= rangeKm) {
+      out.push({ charger: c, crossKm: Math.round(best.crossKm * 10) / 10, alongKm: Math.round(best.alongKm * 10) / 10, segIndex: best.segIndex, source });
+    }
+  }
+  out.sort((a, b) => {
+    const da = a.charger.type === "DC" ? 0 : 1;
+    const db = b.charger.type === "DC" ? 0 : 1;
+    return (da - db) || (a.crossKm - b.crossKm);
+  });
+  return out;
+}
+
+/**
+ * 午餐建議（hark nearestRests 概念，先用現有 FOOD_POIS 54 筆，不搬 z-rests）：
+ * 取離行程點 radiusKm（預設 8）內的美食，按直線距離排序。
+ * anchors 可傳單點或陣列；回傳 [{ ...food, dist, nearName }]（找不到為 []）。
+ */
+function lunchNear(anchors, radiusKm = 8, opts = {}) {
+  const pts = (Array.isArray(anchors) ? anchors : [anchors]).filter(
+    (a) => a && Number.isFinite(Number(a.lat)) && Number.isFinite(Number(a.lng))
+  );
+  if (!pts.length) return [];
+  const pool = typeof FOOD_POIS !== "undefined" ? FOOD_POIS : [];
+  const limit = Math.max(1, Number(opts.limit) || 5);
+  const seen = new Set();
+  const out = [];
+  for (const f of pool) {
+    if (!f || seen.has(f.id || f.name)) continue;
+    let bestDist = Infinity;
+    let nearAnchor = pts[0];
+    for (const a of pts) {
+      const d = haversine(a, f);
+      if (d < bestDist) { bestDist = d; nearAnchor = a; }
+    }
+    if (bestDist > radiusKm) continue;
+    seen.add(f.id || f.name);
+    out.push({ ...f, dist: bestDist, nearName: nearAnchor?.name || "" });
+  }
+  return out.sort((a, b) => a.dist - b.dist).slice(0, limit);
 }
 
 /* ---------- 格式化 ---------- */

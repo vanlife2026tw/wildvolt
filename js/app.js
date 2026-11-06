@@ -15,7 +15,7 @@ const state = {
   startCustom: null,
   itinerary: [],
   stopDays: {},
-  filters: { q: "", cats: ["camp", "car", "hike", "spot"], region: "all", sort: "rating", partner: true, partnerKind: "all" },
+  filters: { q: "", cats: ["camp", "car", "hike", "spot"], region: "all", sort: "rating", partner: true, partnerKind: "all", hikeMode: "featured", peakCounty: "all" },
   anchorId: "camp-cingjing",
   radius: 15,
   foodKinds: [],
@@ -30,6 +30,9 @@ const state = {
   terrain: false,
   showChargers: false,
   osrm: {},
+  // 景點（SIGHTS）延遲載入狀態：idle／loading／ok／error
+  sightsLoad: "idle",
+  sightsError: "",
 };
 
 let map = null;
@@ -39,6 +42,8 @@ const mapLayers = {};
 let radiusCircle = null;
 let rangeCircle = null;
 let lastFocusedEl = null;
+/** 山頭助手 OSRM 精修已處理過的 token（山 id＋搜尋字），避免每次重繪都重打 OSRM */
+let mhRoadRefinedFor = "";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -115,11 +120,149 @@ function persist() {
 }
 
 function allPOIs() {
-  return state.custom.length ? POIS.concat(state.custom) : POIS;
+  const base = state.custom.length ? POIS.concat(state.custom) : POIS;
+  // 小百岳／澡點／景點（觀光署）以 adapter 併入，getPOI／stops／儲存過濾不用改；
+  // 探索清單與地圖仍由 filteredPOIs／visiblePOIs 依分類與登山模式決定要不要顯示。
+  return base.concat(peakPOIs(), bathPOIs(), sightPOIs());
 }
 
 function partnerPOIs() {
   return typeof PARTNER_POIS === "undefined" ? [] : PARTNER_POIS;
+}
+
+/* ---------------- Phase 1–2 新資料 adapter ----------------
+   PEAKS／BATH_POIS／SIGHTS 由其他檔案提供（可能尚未產生）：
+   一律用 typeof 守衛，檔案不存在時回傳 []，探索頁顯示「資料尚未載入」而非報錯。
+   三類都轉成 POI-like 物件（id／name／cat／lat／lng／alt／region），
+   這樣 getPOI／stops／buildTripPlan 不用改就能加入行程、算里程。 */
+function peakList() {
+  return typeof PEAKS !== "undefined" && Array.isArray(PEAKS) ? PEAKS : [];
+}
+
+/** 小百岳縣市是否為推估值（hark 以最近景點推估，邊界山頭可能錯；若資料檔改以登山口校正，可設 PEAK_COUNTY_ESTIMATED = false） */
+function peakCountyEstimated() {
+  return typeof PEAK_COUNTY_ESTIMATED !== "undefined" ? !!PEAK_COUNTY_ESTIMATED : true;
+}
+
+function peakPOIs() {
+  return peakList().map((p) => ({
+    id: `peak-${p.no}`,
+    no: p.no,
+    name: p.name,
+    en: p.en || "",
+    cat: "hike",
+    isPeak: true,
+    lat: Number(p.lat),
+    lng: Number(p.lng),
+    alt: Number(p.elev) || 0,
+    elev: Number(p.elev) || 0,
+    region: String(p.county || ""),
+    county: String(p.county || ""),
+  }));
+}
+
+/** 某座小百岳的登山口／步道（PEAK_ACCESS，以 no 為 key；沒有就回傳 null） */
+function peakAccess(no) {
+  if (typeof PEAK_ACCESS === "undefined" || !PEAK_ACCESS) return null;
+  return PEAK_ACCESS[no] || PEAK_ACCESS[String(no)] || null;
+}
+
+function peakCounties() {
+  const seen = new Set();
+  peakPOIs().forEach((p) => { if (p.county) seen.add(p.county); });
+  return [...seen].sort((a, b) => a.localeCompare(b, "zh-Hant"));
+}
+
+/** 澡點（BATH_POIS，格式同 CAR_POIS，含 address、無電話）：只取名稱／座標／縣市／鄉鎮／地址第一行，不帶電話與內文 */
+function bathPOIs() {
+  if (typeof BATH_POIS === "undefined" || !Array.isArray(BATH_POIS)) return [];
+  return BATH_POIS.map((b, i) => {
+    const region = String(b.region || "");
+    const county = String(b.cy || b.county || region.slice(0, 3) || "");
+    const township = String(b.tn || b.township || b.town || region.slice(3) || "");
+    const address = String(b.address || b.a || "").split("\n")[0].trim();
+    return {
+      id: String(b.id || `bath-${i}`),
+      name: String(b.name || "澡點"),
+      cat: "bath",
+      lat: Number(b.la ?? b.lat),
+      lng: Number(b.lo ?? b.lng),
+      alt: Number(b.alt) || 0,
+      region: (county + township) || region,
+      county,
+      township,
+      address,
+    };
+  }).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+}
+
+/** 景點（SIGHTS，延遲載入）：id／n／la／lo／c／a／v／vs／pk；描述不帶入 UI，改附外部連結 */
+function sightPOIs() {
+  if (typeof SIGHTS === "undefined" || !Array.isArray(SIGHTS)) return [];
+  return SIGHTS.map((s) => ({
+    id: String(s.id).startsWith("sight-") ? String(s.id) : `sight-${s.id}`,
+    name: String(s.n || ""),
+    cat: "sight",
+    lat: Number(s.la),
+    lng: Number(s.lo),
+    alt: 0,
+    region: String(s.c || ""),
+    county: String(s.c || "").slice(0, 3),
+    address: String(s.a || ""),
+    stayMin: Number(s.v) || 0,
+    stayOfficial: s.vs === "o",
+    pk: s.pk || null,
+  })).filter((p) => p.name && Number.isFinite(p.lat) && Number.isFinite(p.lng));
+}
+
+function sightsLoaded() {
+  return typeof SIGHTS !== "undefined" && Array.isArray(SIGHTS);
+}
+
+/**
+ * 景點資料延遲載入：第一次點開「景點」分類時才動態插入 <script> 載入 js/data-sights.js。
+ * 載入中／失敗狀態寫在 state.sightsLoad，探索頁依此顯示「載入中…」或錯誤＋重試，絕不空白。
+ * 同源 GET 會被 sw.js 的 fetch 處理快取，第二次開啟直接吃快取。
+ */
+let sightsLoadPromise = null;
+function ensureSightsLoaded(force = false) {
+  if (sightsLoaded()) {
+    state.sightsLoad = "ok";
+    return Promise.resolve(true);
+  }
+  if (sightsLoadPromise && !force) return sightsLoadPromise;
+  state.sightsLoad = "loading";
+  state.sightsError = "";
+  sightsLoadPromise = new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = "js/data-sights.js";
+    script.async = true;
+    script.onload = () => {
+      sightsLoadPromise = null;
+      if (sightsLoaded()) {
+        state.sightsLoad = "ok";
+        renderExplore();
+        renderMarkers();
+        resolve(true);
+      } else {
+        state.sightsLoad = "error";
+        state.sightsError = "景點資料載入失敗，請檢查網路後重試";
+        renderExplore();
+        resolve(false);
+      }
+    };
+    script.onerror = () => {
+      sightsLoadPromise = null;
+      script.remove();
+      state.sightsLoad = "error";
+      state.sightsError = "景點資料載入失敗，請檢查網路後重試";
+      renderExplore();
+      resolve(false);
+    };
+    document.head.appendChild(script);
+  });
+  renderExplore();
+  return sightsLoadPromise;
 }
 
 function getPOI(id) {
@@ -218,6 +361,7 @@ function matchesQuery(p, q) {
   if (!q) return true;
   const hay = [
     p.name, p.region, p.desc, p.note, p.kind, p.level, p.address, p.partnerKind,
+    p.county, p.en, p.township,
     ...(p.tags || []), ...(p.facts || []),
   ].join(" ").toLowerCase();
   return hay.includes(q.toLowerCase());
@@ -226,15 +370,23 @@ function matchesQuery(p, q) {
 /* ---------------- 探索 ---------------- */
 function renderCatChips() {
   const wrap = $("#catChips");
+  // spot 為既有順遊景點（SPOT_POIS）；sight 為觀光署景點（SIGHTS，延遲載入），兩者分開計數。
   const defs = [
-    ["camp", "露營"], ["car", "車露"], ["hike", "登山"], ["spot", "景點"], ["food", "美食"],
+    ["camp", "露營"], ["car", "車露"], ["hike", "登山"], ["spot", "順遊景點"], ["sight", "景點"], ["bath", "澡點"], ["food", "美食"],
   ];
   const f = state.filters;
   const partnerCount = partnerPOIs().length;
+  const baseCount = (cat) => POIS.filter((p) => p.cat === cat).length;
   wrap.innerHTML = defs.map(([cat, label]) => {
     const on = f.cats.includes(cat);
-    const count = allPOIs().filter((p) => p.cat === cat).length + (cat === "car" ? partnerCount : 0);
-    return `<button type="button" class="chip ${on ? "is-on" : ""}" style="--chip:${catVar(cat)}" data-cat="${cat}" aria-pressed="${on}">
+    let count;
+    if (cat === "hike") count = baseCount("hike"); // 精選 22 條；小百岳筆數另列在登山子篩選
+    else if (cat === "car") count = baseCount("car") + partnerCount;
+    else if (cat === "bath") count = bathPOIs().length;
+    else if (cat === "sight") count = sightsLoaded() ? SIGHTS.length : "6,205";
+    else count = baseCount(cat);
+    const title = cat === "sight" ? "交通部觀光署觀光資訊資料庫（點開時才載入）" : cat === "bath" ? "車床天地澡點（只顯示名稱、縣市、鄉鎮、地址）" : "";
+    return `<button type="button" class="chip ${on ? "is-on" : ""}" style="--chip:${catVar(cat)}" data-cat="${cat}" aria-pressed="${on}" ${title ? `title="${title}"` : ""}>
       <i class="chip-i"></i>${label}<em>${count}</em>
     </button>`;
   }).join("") + (partnerCount ? `
@@ -243,12 +395,38 @@ function renderCatChips() {
     </button>` : "");
 
   const kinds = $("#partnerKinds");
+  renderHikeSub();
   if (!kinds) return;
   if (!partnerCount) { kinds.hidden = true; return; }
   kinds.hidden = !f.partner;
   kinds.innerHTML = PARTNER_KINDS.map(([k, label]) =>
     `<button type="button" class="chip chip-sm ${f.partnerKind === k ? "is-on" : ""}" data-pkind="${k}" aria-pressed="${f.partnerKind === k}">${label}</button>`
   ).join("");
+}
+
+/** 登山子篩選：精選 22 條／小百岳 100 座切換；小百岳模式加縣市下拉（縣市為推估值時標註） */
+function renderHikeSub() {
+  const wrap = $("#hikeSub");
+  if (!wrap) return;
+  const f = state.filters;
+  if (!f.cats.includes("hike")) { wrap.hidden = true; wrap.innerHTML = ""; return; }
+  wrap.hidden = false;
+  const peaks = peakPOIs();
+  const counties = peakCounties();
+  const countyOpts = [`<option value="all">全部縣市</option>`]
+    .concat(counties.map((c) => `<option value="${esc(c)}" ${f.peakCounty === c ? "selected" : ""}>${esc(c)}</option>`))
+    .join("");
+  wrap.innerHTML = `
+    <button type="button" class="chip chip-sm ${f.hikeMode === "featured" ? "is-on" : ""}" data-hikemode="featured" aria-pressed="${f.hikeMode === "featured"}">精選登山<em>${POIS.filter((p) => p.cat === "hike").length}</em></button>
+    <button type="button" class="chip chip-sm ${f.hikeMode === "peaks" ? "is-on" : ""}" data-hikemode="peaks" aria-pressed="${f.hikeMode === "peaks"}" title="100 座小百岳全清單">小百岳<em>${peaks.length || "100"}</em></button>
+    ${f.hikeMode === "peaks" ? `
+      <label class="select-wrap select-wrap--inline">
+        <span>縣市</span>
+        <select id="peakCountySelect" aria-label="小百岳縣市篩選">${countyOpts}</select>
+      </label>
+      ${peakCountyEstimated() ? `<span class="hike-sub-note">縣市為推估</span>` : ""}
+      ${!peaks.length ? `<span class="hike-sub-note">小百岳資料尚未載入（js/data-peaks.js）</span>` : ""}
+    ` : ""}`;
 }
 
 function poiKey(p) {
@@ -258,7 +436,21 @@ function poiKey(p) {
 function filteredPOIs() {
   const f = state.filters;
   const q = f.q.trim();
+  // 景點分類第一次點開時才動態載入 SIGHTS；載入前該分類先顯示 0 筆＋載入中提示（見 renderExplore）
+  if (f.cats.includes("sight") && !sightsLoaded() && state.sightsLoad !== "loading" && state.sightsLoad !== "error") {
+    ensureSightsLoaded();
+  }
   let list = allPOIs().filter((p) => f.cats.includes(p.cat));
+
+  // 登山模式：精選只留 HIKE_POIS 22 條；小百岳只留 PEAKS 100 座（可再依縣市篩選）
+  if (f.cats.includes("hike")) {
+    if (f.hikeMode === "peaks") {
+      list = list.filter((p) => p.cat !== "hike" || p.isPeak);
+      if (f.peakCounty !== "all") list = list.filter((p) => p.cat !== "hike" || p.county === f.peakCounty);
+    } else {
+      list = list.filter((p) => !p.isPeak);
+    }
+  }
 
   // 車床天地特約點：開啟時顯示，或搜尋時自動納入
   const showPartner = partnerPOIs().length && f.cats.includes("car") && (f.partner || q.length >= 2);
@@ -271,7 +463,10 @@ function filteredPOIs() {
 
   if (f.region !== "all") list = list.filter((p) => areaOf(p.region) === f.region);
   if (q) list = list.filter((p) => matchesQuery(p, q));
-  if (f.sort === "rating") {
+  if (f.hikeMode === "peaks" && f.cats.includes("hike") && f.sort === "rating") {
+    // 小百岳沒有評價，預設依編號排序
+    list.sort((a, b) => (a.no || 0) - (b.no || 0) || a.name.localeCompare(b.name, "zh-Hant"));
+  } else if (f.sort === "rating") {
     list.sort((a, b) =>
       (b.rating || 0) - (a.rating || 0)
       || Number(!!a.partner) - Number(!!b.partner)
@@ -282,6 +477,85 @@ function filteredPOIs() {
     list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
   }
   return list;
+}
+
+/** 探索清單列：一般據點沿用 poiRowHTML；小百岳／澡點／景點用各自的欄位顯示 */
+function exploreRowHTML(p) {
+  if (p.isPeak) return peakRowHTML(p);
+  if (p.cat === "bath") return bathRowHTML(p);
+  if (p.cat === "sight") return sightRowHTML(p);
+  return poiRowHTML(p);
+}
+
+function peakRowHTML(p) {
+  const added = state.itinerary.includes(p.id);
+  const acc = peakAccess(p.no);
+  const thN = acc && Array.isArray(acc.th) ? acc.th.length : 0;
+  const trN = acc && Array.isArray(acc.tr) ? acc.tr.length : 0;
+  const meta = [
+    p.county || "",
+    p.elev ? `海拔 ${fmtKm(p.elev)} m` : "",
+    thN ? `登山口 ${thN} 處` : "",
+    trN ? `步道 ${trN} 條` : "",
+  ].filter(Boolean);
+  return `<div class="poi-row ${state.selectedId === p.id ? "is-selected" : ""}" style="--c:${catVar("hike")}" data-id="${p.id}" tabindex="0" role="button" aria-label="${esc(p.name)}，小百岳第 ${p.no} 號">
+    ${poiIconHTML(p)}
+    <div class="poi-main">
+      <div class="poi-title">
+        <strong>${esc(p.name)}</strong>
+        <span class="badge">小百岳 ${p.no}</span>
+        ${peakCountyEstimated() ? `<span class="badge badge--note">縣市為推估</span>` : ""}
+        ${added ? '<span class="badge" style="color:var(--forest);border-color:rgba(47,125,79,.35);background:var(--lime-soft)">已加入</span>' : ""}
+      </div>
+      <div class="poi-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</div>
+      ${p.en ? `<div class="poi-tags"><span>${esc(p.en)}</span></div>` : ""}
+    </div>
+    <div class="poi-actions">
+      <button type="button" class="mini-btn ${added ? "" : "solid"}" data-act="add" data-id="${p.id}" ${added ? "disabled" : ""}>${added ? "已加入" : "＋ 加入"}</button>
+    </div>
+  </div>`;
+}
+
+function bathRowHTML(p) {
+  const added = state.itinerary.includes(p.id);
+  const meta = [p.county || "", p.township || "", p.address || ""].filter(Boolean);
+  return `<div class="poi-row ${state.selectedId === p.id ? "is-selected" : ""}" style="--c:${catVar("bath")}" data-id="${p.id}" tabindex="0" role="button" aria-label="${esc(p.name)}，澡點">
+    ${poiIconHTML(p)}
+    <div class="poi-main">
+      <div class="poi-title">
+        <strong>${esc(p.name)}</strong>
+        <span class="badge">澡點</span>
+        ${added ? '<span class="badge" style="color:var(--forest);border-color:rgba(47,125,79,.35);background:var(--lime-soft)">已加入</span>' : ""}
+      </div>
+      <div class="poi-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</div>
+    </div>
+    <div class="poi-actions">
+      <button type="button" class="mini-btn ${added ? "" : "solid"}" data-act="add" data-id="${p.id}" ${added ? "disabled" : ""}>${added ? "已加入" : "＋ 加入"}</button>
+    </div>
+  </div>`;
+}
+
+function sightRowHTML(p) {
+  const added = state.itinerary.includes(p.id);
+  const stay = p.stayMin
+    ? `建議停留約 ${p.stayMin} 分鐘（${p.stayOfficial ? "官方" : "估計"}）`
+    : "";
+  const meta = [p.county || p.region || "", p.address || "", stay].filter(Boolean);
+  return `<div class="poi-row ${state.selectedId === p.id ? "is-selected" : ""}" style="--c:${catVar("sight")}" data-id="${p.id}" tabindex="0" role="button" aria-label="${esc(p.name)}，景點">
+    ${poiIconHTML(p)}
+    <div class="poi-main">
+      <div class="poi-title">
+        <strong>${esc(p.name)}</strong>
+        <span class="badge">景點</span>
+        ${added ? '<span class="badge" style="color:var(--forest);border-color:rgba(47,125,79,.35);background:var(--lime-soft)">已加入</span>' : ""}
+      </div>
+      <div class="poi-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</div>
+      <div class="poi-tags"><span><a href="https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lng}" target="_blank" rel="noopener">Google 地圖</a></span><span><a href="https://www.taiwan.net.tw/" target="_blank" rel="noopener">觀光署</a></span></div>
+    </div>
+    <div class="poi-actions">
+      <button type="button" class="mini-btn ${added ? "" : "solid"}" data-act="add" data-id="${p.id}" ${added ? "disabled" : ""}>${added ? "已加入" : "＋ 加入"}</button>
+    </div>
+  </div>`;
 }
 
 function poiRowHTML(p) {
@@ -438,6 +712,23 @@ function renderMountainHelper(filteredList) {
       ${spotHTML}
     </div>
   `;
+  // 過夜點搜尋改用開車路程精修（engine.js rankStays）：OSRM 回來後把直線距離
+  // 換成開車路程；同一座山只精修一次，OSRM 失敗就保留直線距離（不空白、不報錯）。
+  if (carSpots.length && typeof rankStays === "function") {
+    const token = `${mountain.id}|${q}`;
+    if (mhRoadRefinedFor !== token) {
+      mhRoadRefinedFor = token;
+      rankStays(mountain, null, 12, {}).then((res) => {
+        if (!res || res.source !== "osrm" || !wrap.innerHTML.includes(esc(mountain.name))) return;
+        const byId = new Map(res.items.map((r) => [r.item.id, r]));
+        wrap.querySelectorAll("[data-mh-focus]").forEach((el) => {
+          const r = byId.get(el.dataset.mhFocus);
+          const distEl = el.querySelector(".mh-dist");
+          if (r && distEl) distEl.textContent = `距登山口開車約 ${r.roadKm.toFixed(1)} km`;
+        });
+      }).catch(() => {});
+    }
+  }
 }
 
 function renderExplore() {
@@ -445,7 +736,7 @@ function renderExplore() {
   const list = filteredPOIs();
   const f = state.filters;
 
-  const sig = JSON.stringify([f.q, f.cats, f.region, f.sort, f.partner, f.partnerKind]);
+  const sig = JSON.stringify([f.q, f.cats, f.region, f.sort, f.partner, f.partnerKind, f.hikeMode, f.peakCounty, state.sightsLoad]);
   if (sig !== state.exploreSig) {
     state.exploreSig = sig;
     state.exploreLimit = 40;
@@ -464,16 +755,28 @@ function renderExplore() {
       ? `線上找到 ${state.livePoi.items.length} 筆`
       : "沒有符合條件的據點";
 
+  // 景點（SIGHTS）延遲載入狀態橫幅：載入中／失敗（含重試）絕不空白；成功後照常列清單。
+  let sightBanner = "";
+  if (f.cats.includes("sight")) {
+    if (state.sightsLoad === "loading") {
+      sightBanner = `<div class="sight-status" data-tone="">景點資料載入中…</div>`;
+    } else if (state.sightsLoad === "error") {
+      sightBanner = `<div class="sight-status" data-tone="error">${esc(state.sightsError || "景點資料載入失敗，請檢查網路後重試")}<button type="button" class="mini-btn solid" data-act="sights-retry">重試</button></div>`;
+    } else if (!sightsLoaded()) {
+      sightBanner = `<div class="sight-status" data-tone="">景點資料尚未載入（js/data-sights.js，點開「景點」分類時才載入）。</div>`;
+    }
+  }
+
   if (!list.length) {
-    if (hasLive) { wrap.innerHTML = ""; return; }
-    wrap.innerHTML = `<div class="empty-state"><strong>換個關鍵字試試</strong>${
+    if (hasLive) { wrap.innerHTML = sightBanner; return; }
+    wrap.innerHTML = sightBanner + `<div class="empty-state"><strong>換個關鍵字試試</strong>${
       q ? `在地圖資沒有「${esc(q)}」，上方會同步搜尋 OpenStreetMap。` : "試試「車泊」、「海鮮」或清除區域篩選。"
     }</div>`;
     return;
   }
 
   const shown = list.slice(0, state.exploreLimit);
-  wrap.innerHTML = shown.map(poiRowHTML).join("") + (list.length > shown.length
+  wrap.innerHTML = sightBanner + shown.map(exploreRowHTML).join("") + (list.length > shown.length
     ? `<div class="list-more"><button type="button" class="ghost-btn" data-act="more">顯示更多（還有 ${list.length - shown.length} 筆）</button></div>`
     : "");
 }
@@ -1045,6 +1348,25 @@ function visiblePOIs() {
     list = list.concat(base.filter((p) => p.cat === "food"));
   }
 
+  // 登山模式與探索清單一致：精選只留 22 條，小百岳只留 PEAKS（依縣市篩選）
+  if (cats.includes("hike")) {
+    if (state.filters.hikeMode === "peaks") {
+      list = list.filter((p) => p.cat !== "hike" || p.isPeak);
+      if (state.filters.peakCounty !== "all") {
+        list = list.filter((p) => p.cat !== "hike" || p.county === state.filters.peakCounty);
+      }
+    } else {
+      list = list.filter((p) => !p.isPeak);
+    }
+  }
+
+  // 景點 6,205 筆全上地圖會卡：只顯示符合目前篩選（關鍵字／區域）的前 300 筆
+  if (cats.includes("sight")) {
+    const sightShown = filteredPOIs().filter((p) => p.cat === "sight").slice(0, 300);
+    const sightIds = new Set(sightShown.map((p) => p.id));
+    list = list.filter((p) => p.cat !== "sight" || sightIds.has(p.id));
+  }
+
   const q = state.filters.q.trim();
   if (partnerPOIs().length && cats.includes("car") && (state.filters.partner || q.length >= 2)) {
     let extra = partnerPOIs();
@@ -1177,7 +1499,7 @@ function renderMarkers() {
         title: `${c.name} · ${c.power} kW`,
         riseOnHover: true,
       }).bindPopup(
-        `<strong>${esc(c.name)}</strong><br><span style="color:#68756b">${esc(c.network)} · ${c.power} kW ${c.type}<br>${esc(c.note)}</span>`
+        `<strong>${esc(c.name)}</strong>${c.rec ? ' <b style="color:#8a6d00">比價推薦</b>' : ""}<br><span style="color:#68756b">${esc(c.network)} · ${c.power} kW ${c.type}<br>${esc(c.note)}</span>`
       ).addTo(mapLayers.chargers);
     });
     if (!map.hasLayer(mapLayers.chargers)) mapLayers.chargers.addTo(map);
@@ -1332,6 +1654,49 @@ function renderDetail(p) {
       </div>`
     : "";
 
+  /* 小百岳：登山口（th）與步道（tr，附健行筆記連結、長度、時間、難度） */
+  let peakAccessHtml = "";
+  if (p.isPeak) {
+    const acc = peakAccess(p.no);
+    const th = (acc && Array.isArray(acc.th) ? acc.th : []);
+    const tr = (acc && Array.isArray(acc.tr) ? acc.tr : []);
+    const thHtml = th.length
+      ? `<div class="pc-access-title">登山口／停車場（${th.length} 處）</div>` + th.map((t) => {
+          // th.pk 為附近停車場陣列 [{n, la, lo, d, i}]（多為空陣列），只顯示處數與第一處名稱
+          const pkTxt = Array.isArray(t.pk) && t.pk.length
+            ? ` · 附近停車場 ${t.pk.length} 處${t.pk[0] && t.pk[0].n ? `（${esc(String(t.pk[0].n))}）` : ""}`
+            : "";
+          return `<div class="pc-access-row"><b>${esc(t.n || "登山口")}</b><span>${pkTxt}</span><a class="mini-btn" href="https://www.google.com/maps/dir/?api=1&destination=${t.la},${t.lo}&travelmode=driving" target="_blank" rel="noopener">導航</a></div>`;
+        }).join("")
+      : `<div class="pc-access-title">登山口／停車場</div><p class="pc-note">本座尚無登山口資料。</p>`;
+    const trHtml = tr.length
+      ? `<div class="pc-access-title">周邊步道（${tr.length} 條）</div>` + tr.map((t) => {
+          const url = t.url || (t.bid ? `https://hiking.biji.co/index.php?q=trail&act=detail&id=${t.bid}` : "");
+          // tr.len 已含單位（如 "3.5 公里"），直接顯示不另加單位
+          const meta = [t.len ? String(t.len) : "", t.time || "", t.dif || ""].filter(Boolean).join(" · ");
+          return `<div class="pc-access-row"><b>${esc(t.n || "步道")}</b>${meta ? `<span> · ${esc(meta)}</span>` : ""}${url ? `<a class="mini-btn" href="${esc(url)}" target="_blank" rel="noopener">健行筆記</a>` : ""}</div>`;
+        }).join("")
+      : `<div class="pc-access-title">周邊步道</div><p class="pc-note">本座尚無步道資料。</p>`;
+    peakAccessHtml = `<div class="pc-access">${thHtml}${trHtml}${peakCountyEstimated() ? `<p class="pc-note">小百岳縣市為推估值，邊界山頭可能有誤；登山口座標來自健行筆記網友整理，出發前請再確認。</p>` : ""}</div>`;
+  }
+
+  /* 景點（觀光署）：不顯示描述內文，改附外部連結；建議停留標官方／估計 */
+  let sightHtml = "";
+  if (p.cat === "sight") {
+    sightHtml = `<div class="pc-access">
+      ${p.address ? `<p>${esc(p.address)}</p>` : ""}
+      ${p.stayMin ? `<p>建議停留約 <b>${p.stayMin} 分鐘</b>（${p.stayOfficial ? "官方" : "估計"}）</p>` : ""}
+      <p><a href="https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lng}" target="_blank" rel="noopener">Google 地圖</a> · <a href="https://www.taiwan.net.tw/" target="_blank" rel="noopener">觀光署</a></p>
+      <p class="pc-note">資料來源：交通部觀光署觀光資訊資料庫；營業時間與門票請以官方公告為準。</p>
+    </div>`;
+  }
+
+  /* 澡點：只顯示名稱、縣市、鄉鎮、地址，不顯示電話 */
+  let bathHtml = "";
+  if (p.cat === "bath") {
+    bathHtml = `<div class="pc-access"><p class="pc-note">澡點資訊由車床天地整理，收費與開放時間可能異動，詳情請洽車床天地官網。</p></div>`;
+  }
+
   body.innerHTML = `
     <div class="pc-head">
       <span class="pc-icon" style="--c:${catVar(p.cat)}">${svgIcon(CATEGORIES[p.cat]?.icon || "pin")}</span>
@@ -1343,6 +1708,9 @@ function renderDetail(p) {
     <div class="pc-facts">${facts.slice(0, 4).map((f) => `<span>${esc(f)}</span>`).join("")}</div>
     <p class="pc-desc">${esc(p.desc || "")}</p>
     ${p.note ? `<p class="pc-note">注意：${esc(p.note)}</p>` : ""}
+    ${peakAccessHtml}
+    ${sightHtml}
+    ${bathHtml}
     ${nearbyCarHtml}
     <div class="pc-actions">
       <button type="button" class="mini-btn ${added ? "" : "solid"}" data-act="add" data-id="${p.id}" ${added ? "disabled" : ""}>${added ? "已在行程中" : "＋ 加入行程"}</button>
@@ -1699,10 +2067,30 @@ function wireEvents() {
     state.filters.cats = on
       ? state.filters.cats.filter((c) => c !== cat)
       : [...state.filters.cats, cat];
+    // 景點分類第一次點開時才動態載入 SIGHTS（延遲載入）
+    if (cat === "sight" && state.filters.cats.includes("sight")) ensureSightsLoaded();
     renderCatChips();
     renderExplore();
     renderMarkers();
   });
+
+  const hikeSub = $("#hikeSub");
+  if (hikeSub) {
+    hikeSub.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-hikemode]");
+      if (!btn) return;
+      state.filters.hikeMode = btn.dataset.hikemode;
+      renderExplore();
+      renderMarkers();
+    });
+    hikeSub.addEventListener("change", (e) => {
+      if (e.target.id === "peakCountySelect") {
+        state.filters.peakCounty = e.target.value;
+        renderExplore();
+        renderMarkers();
+      }
+    });
+  }
 
   const partnerKinds = $("#partnerKinds");
   if (partnerKinds) {
@@ -1719,6 +2107,7 @@ function wireEvents() {
     const action = e.target.closest("[data-act]");
     if (action) {
       e.stopPropagation();
+      if (action.dataset.act === "sights-retry") { ensureSightsLoaded(true); return; }
       if (action.dataset.act === "add") addStop(action.dataset.id);
       if (action.dataset.act === "nearby") setAnchorAndFood(action.dataset.id);
       if (action.dataset.act === "more") {

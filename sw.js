@@ -2,7 +2,7 @@
    策略：App Shell（本機檔案）用 Cache First，離線也能開；
    圖磚／OSRM／Nominatim 等外部即時資料一律走網路（不快取），
    避免離線時拿到過期的地圖或里程。快取版本號一改就整包換新。 */
-const CACHE = "wildvolt-v3";
+const CACHE = "wildvolt-v4";
 const SHELL = [
   "./",
   "./index.html",
@@ -11,6 +11,7 @@ const SHELL = [
   "./js/data-core.js",
   "./js/data-camp.js",
   "./js/data-hike.js",
+  "./js/data-peaks.js",
   "./js/data-food.js",
   "./js/data-partner.js",
   "./js/data-highway.js",
@@ -23,6 +24,8 @@ const SHELL = [
   "./icons/icon-512.png",
   "./icons/icon-512-maskable.png",
 ];
+// 注意：js/data-sights.js（觀光署景點 6,205 筆）是延遲載入，不放預快取清單；
+// 第一次載入時走下方 fetch 處理（同源 GET 一律快取），之後離線也能從快取讀到。
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

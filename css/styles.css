@@ -1827,3 +1827,20 @@ input[type="range"]::-moz-range-thumb {
 .veh-conv-item span { color: var(--muted); }
 .veh-conv-item strong { font-family: var(--num); font-size: 12px; color: var(--ink); }
 .veh-conv-item strong small { font-weight: 400; font-size: 10px; color: var(--muted); }
+
+/* ===== Phase 1–2 新增樣式 ===== */
+.rec-badge { color: #8a6d00; border-color: rgba(138, 109, 0, .4); background: #fff7d6; }
+.badge--note { color: var(--muted); border-color: rgba(107, 122, 112, .35); background: #f2f4ef; }
+.price-note { color: var(--muted); font-size: 10px; }
+.hike-sub-note { font-size: 10px; color: var(--muted); align-self: center; }
+.select-wrap--inline { display: inline-flex; align-items: center; gap: 4px; }
+.select-wrap--inline select { font-size: 11px; padding: 4px 6px; }
+.corridor-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 11px; color: var(--muted); }
+.corridor-row select { font-size: 11px; padding: 4px 6px; }
+.dest-chargers-wrap { display: grid; gap: 6px; }
+.sight-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; margin-bottom: 8px; border-radius: 10px; font-size: 11px; color: var(--muted); background: #f2f4ef; border: 1px solid rgba(107, 122, 112, .25); }
+.sight-status[data-tone="error"] { color: var(--danger); background: #fbe9e8; border-color: rgba(176, 58, 48, .35); }
+.pc-access { margin-top: 8px; display: grid; gap: 4px; }
+.pc-access-title { font-size: 11px; font-weight: 700; margin-top: 6px; }
+.pc-access-row { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 11.5px; }
+.pc-access-row .mini-btn { margin-left: auto; }

@@ -12,6 +12,10 @@ const CATEGORIES = {
   hike: { label: "登山", icon: "peak", color: "#b4641f" },
   spot: { label: "景點", icon: "pin",  color: "#7c52a5" },
   food: { label: "美食", icon: "bowl", color: "#c8455c" },
+  // Phase 1–2 新增：澡點（BATH_POIS，車床天地澡點 411 筆）、
+  // 景點（SIGHTS，觀光署 6,205 筆，延遲載入）。spot 保留為既有順遊景點。
+  bath: { label: "澡點", icon: "pin",  color: "#0e7a6d" },
+  sight: { label: "景點", icon: "pin", color: "#7c52a5" },
 };
 
 const FOOD_KINDS = ["小吃", "麵飯", "海鮮", "合菜", "咖啡甜點", "冰品", "原民料理"];

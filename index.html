@@ -100,6 +100,7 @@
 
           <div class="chip-row" id="catChips" role="group" aria-label="據點類型"></div>
           <div class="chip-row chip-row--sub" id="partnerKinds" role="group" aria-label="特約點類型" hidden></div>
+          <div class="chip-row chip-row--sub" id="hikeSub" role="group" aria-label="登山篩選" hidden></div>
 
           <div class="filter-row">
             <label class="select-wrap">
@@ -189,6 +190,15 @@
             </div>
             <div id="routeCompare" class="route-compare"></div>
             <div id="highwayStopsWrap" class="highway-stops-wrap"></div>
+            <label class="corridor-row">
+              <span>沿途充電站繞道範圍（自動／一般道路走法）</span>
+              <select id="corridorSelect" aria-label="沿途充電站繞道範圍">
+                <option value="2">繞道 2 km 內</option>
+                <option value="5" selected>繞道 5 km 內</option>
+                <option value="10">繞道 10 km 內</option>
+                <option value="20">繞道 20 km 內</option>
+              </select>
+            </label>
           </div>
 
           <div class="day-plan-block" id="dayPlanBlock">
@@ -269,6 +279,12 @@
             <span class="section-count" id="chargeCount">0 次</span>
           </div>
           <div id="chargePlan" class="charge-plan"></div>
+
+          <div class="section-head">
+            <h3>目的地周邊充電站</h3>
+            <span class="section-hint">開車路程排序，DC 優先</span>
+          </div>
+          <div id="destChargersWrap" class="dest-chargers-wrap"></div>
 
           <div class="section-head">
             <h3>分日行程</h3>
@@ -448,6 +464,7 @@
   <script src="js/data-core.js"></script>
   <script src="js/data-camp.js"></script>
   <script src="js/data-hike.js"></script>
+  <script src="js/data-peaks.js"></script>
   <script src="js/data-food.js"></script>
   <script src="js/data-partner.js"></script>
   <script src="js/data-chargers-lux.js"></script>

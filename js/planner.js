@@ -94,6 +94,10 @@ function renderTrip() {
   const retCheck = $("#returnTripCheck");
   if (retCheck) retCheck.checked = !!state.ev.returnTrip;
 
+  /* 沿途充電站繞道範圍（corrPick，2／5／10／20 km，預設 5） */
+  const corridorSel = $("#corridorSelect");
+  if (corridorSel) corridorSel.value = String(clamp(Number(state.ev.corridorKm) || 5, 2, 20));
+
   /* 過夜模式：只有 2 天以上行程才需要選 */
   const ovSel = $("#overnightModeSelect");
   if (ovSel) ovSel.value = state.ev.overnightMode || "camp-ac";
@@ -379,17 +383,22 @@ function renderTrip() {
         : c.where === "dest"
           ? `第 ${c.legIndex + 1} 段 · 抵達「${esc(c.at.name)}」後補電`
           : `第 ${c.legIndex + 1} 段 · 途中順路補電（往「${esc(c.at.name)}」）`;
-      const addrText = c.charger.address ? `<br><small style="color:var(--muted)">地址：${esc(c.charger.address)}${c.charger.price ? ` · ${esc(c.charger.price)}` : ""}</small>` : "";
+      // 比價推薦（LuxClub 資料 rec: true，102 站）＋價格快照提醒（充電站價格為 2026/06/03 快照）
+      const recBadge = c.charger.rec ? `<span class="badge rec-badge">比價推薦</span>` : "";
+      const addrText = c.charger.address
+        ? `<br><small style="color:var(--muted)">地址：${esc(c.charger.address)}${c.charger.price ? ` · ${esc(c.charger.price)} <span class="price-note">（出發前請用各家 APP 確認）</span>` : ""}</small>`
+        : `<br><small style="color:var(--muted)">出發前請用各家 APP 確認價格與營運狀態</small>`;
       return `<div class="charge-item">
         <span class="charge-bolt">${svgIcon("bolt")}</span>
         <div class="charge-body">
-          <strong>${title}</strong>
+          <strong>${title} ${recBadge}</strong>
           <p><b>${esc(c.charger.name)}</b> · ${esc(c.charger.network)} · ${c.charger.power} kW ${isAC ? "AC 慢充" : "DC 快充"}（${esc(c.charger.connectors || "CCS1")}）${isAC ? "" : ` · 距山上目的地約 ${c.dist.toFixed(1)} km`}${addrText}</p>
           <p class="charge-meta">抵達充電站約 ${Math.round(c.from)}% → 建議充至 <b>${Math.round(c.to)}%</b> · 約需 <b>${fmtChargeTime(c.minutes)}</b>${isAC ? "（建議過夜慢充）" : ""} · <a href="https://www.google.com/maps/dir/?api=1&destination=${c.charger.lat},${c.charger.lng}&travelmode=driving" target="_blank" rel="noopener" style="color:var(--charge);text-decoration:underline">導航至此充電站</a></p>
         </div>
       </div>`;
     }).join("");
   }
+  renderDestChargers(p, list);
 
   /* 分日行程 */
   const dayWrap = $("#dayPlanWrap");
@@ -409,11 +418,33 @@ function renderTrip() {
         const chargeText = d.charges.length
           ? d.charges.map((c) => `在「${esc(c.charger.name)}」${Math.round(c.from)}% → ${Math.round(c.to)}%（${fmtChargeTime(c.minutes)}）`).join("；")
           : "免補電";
+        /* 沿途充電站（走廊式，corrPick）：只對 auto／local 走法；國道走法沿用服務區逐站評估。
+           refineOsrm 不存線形幾何，這裡以當日各段起訖直線為走廊，UI 標「直線備援」。 */
+        let corridorHtml = "";
+        if (p.routeMode === "nh1" || p.routeMode === "nh3") {
+          corridorHtml = `<div class="day-card-meta">沿途充電站：國道走法沿用上方「沿途服務區」逐站評估，不另列走廊式清單。</div>`;
+        } else if (d.legs.length && typeof corrPick === "function") {
+          const corridorKm = clamp(Number(state.ev.corridorKm) || 5, 2, 20);
+          const corr = corrPick(d.legs.map((l) => ({ from: l.from, to: l.to })), CHARGERS, corridorKm).slice(0, 3);
+          corridorHtml = corr.length
+            ? `<div class="day-card-meta">沿途充電站（離當日路線繞道 ${corridorKm} km 內，DC 優先）：${corr.map((x) => `「${esc(x.charger.name)}」（${x.charger.type} ${x.charger.power} kW，繞道約 ${x.crossKm} km${x.charger.rec ? " · 比價推薦" : ""}）`).join("；")} <span class="price-note">路線以直線備援估算</span></div>`
+            : `<div class="day-card-meta">沿途充電站：當日路線繞道 ${corridorKm} km 內無充電站（直線備援估算）。</div>`;
+        }
+        /* 附近午餐（lunchNear）：當日行程點 8 km 內 FOOD_POIS，按距離排序 */
+        let lunchHtml = "";
+        if (d.stops.length && typeof lunchNear === "function") {
+          const lunch = lunchNear(d.stops, 8, { limit: 3 });
+          lunchHtml = lunch.length
+            ? `<div class="day-card-meta">附近午餐：${lunch.map((f) => `「${esc(f.name)}」（${esc(f.kind || "餐飲")}，距「${esc(f.nearName)}」${f.dist < 1 ? `${Math.round(f.dist * 1000)} m` : `${f.dist.toFixed(1)} km`}）`).join("；")} <span class="price-note">出發前請確認營業時間</span></div>`
+            : `<div class="day-card-meta">附近午餐：當日行程點 8 km 內無內建美食資料。</div>`;
+        }
         return `<div class="day-card">
           <div class="day-card-head"><b>第 ${d.day} 天</b><span>${nightText}</span></div>
           <div class="day-card-route">${routeText}</div>
           <div class="day-card-meta">里程 ${fmtKm(d.km, 1)} km · 耗電 ${d.energy.toFixed(1)} 度 · 行車 ${fmtDuration(d.minutes / 60)}${d.startSoc !== null ? ` · 出發 ${fmtSoc(d.startSoc)} → 收尾 ${fmtSoc(d.endSoc)}` : ""}</div>
           <div class="day-card-meta">補電：${chargeText}</div>
+          ${corridorHtml}
+          ${lunchHtml}
           ${d.morningStay ? `<div class="day-card-meta">🌙 前一晚在「${esc(d.morningStay.at.name)}」過夜：${esc(d.morningStay.label)}，早上出發 ${fmtSoc(d.morningStay.afterSoc)}</div>` : ""}
         </div>`;
       }).join("");
@@ -503,6 +534,54 @@ function renderTrip() {
   }
 
   renderSaved();
+}
+
+/* ---------------- 目的地周邊充電站（開車路程，rangePick） ----------------
+   先以直線距離即時顯示（標「直線估算」），再用 OSRM 批次精修為開車路程；
+   25 km 內找不到自動擴大 2／3／5 倍；OSRM 失敗就保留直線估算，絕不空白。
+   同一目的地＋同一行程只精修一次（destChargersSig），避免每次重繪都重打 OSRM。 */
+let destChargersSig = "";
+function renderDestChargers(p, list) {
+  const wrap = $("#destChargersWrap");
+  if (!wrap) return;
+  const dest = list && list.length ? list[list.length - 1] : null;
+  if (!dest) { wrap.innerHTML = ""; destChargersSig = ""; return; }
+  const sig = `${dest.id}|${list.map((s) => s.id).join(",")}`;
+  if (sig === destChargersSig) return;
+  destChargersSig = sig;
+
+  const renderRows = (rows, source, radiusKm, expanded) => {
+    const head = `<div class="route-compare-head">目的地周邊充電站（開車路程，DC 優先）</div>`;
+    if (!rows.length) {
+      wrap.innerHTML = `${head}<div class="route-compare-hint">「${esc(dest.name)}」周邊 ${radiusKm} km（已擴大至 ${radiusKm * 5} km）內沒有充電站，請先確認營地是否供電。</div>`;
+      return;
+    }
+    const srcNote = source === "osrm"
+      ? "開車路程（OSRM）"
+      : source === "straight" ? "直線估算（OSRM 暫時無法連線）" : "";
+    wrap.innerHTML = `${head}<div class="route-compare-hint">以「${esc(dest.name)}」為圓心，${radiusKm} km 內${expanded ? "（已自動擴大範圍）" : ""} · ${srcNote}</div>` + rows.map((r) => {
+      const c = r.item || r.charger;
+      const km = r.roadKm ?? r.straightKm;
+      return `<div class="highway-stop">
+        <div class="highway-stop-main">
+          <b>${esc(c.name)}</b>${c.rec ? ` <span class="badge rec-badge">比價推薦</span>` : ""}
+          <span>${esc(c.network || "")} · ${c.power} kW ${c.type}（${esc(c.connectors || "CCS1")}）</span>
+          <span>開車約 ${km.toFixed(1)} km${c.price ? ` · ${esc(c.price)} <span class="price-note">（出發前請用各家 APP 確認）</span>` : " · 出發前請用各家 APP 確認價格"}</span>
+        </div>
+        <a class="mini-btn" href="https://www.google.com/maps/dir/?api=1&destination=${c.lat},${c.lng}&travelmode=driving" target="_blank" rel="noopener" style="text-align:center;line-height:24px">導航</a>
+      </div>`;
+    }).join("");
+  };
+
+  if (typeof rangePickStraight === "function") {
+    renderRows(rangePickStraight(dest, CHARGERS, 25).slice(0, 5).map((r) => ({ ...r, roadKm: r.straightKm })), "straight", 25, false);
+  }
+  if (typeof rangePick === "function") {
+    rangePick(dest, CHARGERS, 25, { limit: 5, dcFirst: true }).then((res) => {
+      if (destChargersSig !== sig) return; // 行程已變，丟棄過期結果
+      renderRows(res.items, res.source, res.radiusKm, res.expanded);
+    }).catch(() => { /* 直線估算已顯示，不再報錯 */ });
+  }
 }
 
 /**
@@ -1168,6 +1247,13 @@ function wirePlanner() {
       renderTrip();
       toast(state.ev.highwayChargeId ? "已選定國道服務區補電點" : "已取消國道服務區補電點，改回自動補電");
     }
+  });
+
+  /* 沿途充電站繞道範圍（corrPick，2／5／10／20 km） */
+  $("#corridorSelect")?.addEventListener("change", (e) => {
+    state.ev.corridorKm = clamp(Number(e.target.value) || 5, 2, 20);
+    persist();
+    renderTrip();
   });
 
   /* 出遊天數與回程 */
