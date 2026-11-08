@@ -1268,6 +1268,7 @@ function initMap() {
   L.control.scale({ imperial: false, position: "bottomleft", maxWidth: 110 }).addTo(map);
 
   mapLayers.route = L.layerGroup().addTo(map);
+  mapLayers.nearby = L.layerGroup().addTo(map);
 
   if (typeof L.markerClusterGroup === "function") {
     const clusterIcon = (cls) => (cluster) => {
@@ -1507,6 +1508,14 @@ function renderMarkers() {
     map.removeLayer(mapLayers.chargers);
   }
 
+  // 選點聚焦：已挑地點時，地圖加畫該點附近 10 公里內的東西
+  if (state.selectedId && state.view !== "trip") {
+    const sel = getPOI(state.selectedId);
+    if (sel) renderNearbyLayer(sel); else clearNearbyLayer();
+  } else {
+    clearNearbyLayer();
+  }
+
   renderRoute();
   updateMapCount();
 }
@@ -1605,6 +1614,98 @@ function updateMapCount() {
   label.innerHTML = `<b>${n}</b> 個據點`;
 }
 
+/* ---------------- 選點聚焦：附近 10 公里 ----------------
+   挑好一個地點時，地圖放大顯示該點周邊 10 公里內的東西
+   （充電站、美食、車宿、登山、澡點、景點…）；點附近的圖釘，
+   會換成以那個點為中心重新聚焦。 */
+const NEARBY_KM = 10;
+const NEARBY_CAP = { charge: 8, food: 8, camp: 6, car: 6, hike: 8, bath: 6, sight: 8 };
+let nearbyCircle = null;
+
+function nearbyAround(p, maxKm = NEARBY_KM) {
+  if (!p || !Number.isFinite(p.lat) || !Number.isFinite(p.lng)) return [];
+  const pool = allPOIs().concat(partnerPOIs());
+  const out = [];
+  const seen = new Set();
+  for (const q of pool) {
+    if (!q || q.id === p.id || !Number.isFinite(q.lat) || !Number.isFinite(q.lng)) continue;
+    const d = haversine(p, q);
+    if (d > maxKm) continue;
+    const key = q.name || q.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ ...q, dist: d });
+  }
+  for (const c of (typeof CHARGERS !== "undefined" ? CHARGERS : [])) {
+    if (!c || !Number.isFinite(c.lat) || !Number.isFinite(c.lng)) continue;
+    const d = haversine(p, c);
+    if (d > maxKm) continue;
+    const key = c.name || "";
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ ...c, id: `charge:${c.name}`, cat: "charge", isCharge: true, dist: d });
+  }
+  out.sort((a, b) => a.dist - b.dist);
+  const counts = {};
+  const capped = out.filter((q) => {
+    const cap = NEARBY_CAP[q.cat] || 6;
+    counts[q.cat] = (counts[q.cat] || 0) + 1;
+    return counts[q.cat] <= cap;
+  });
+  return capped.slice(0, 40);
+}
+
+function nearbyIcon(item) {
+  if (item.isCharge) {
+    return L.divIcon({
+      className: "poi-marker poi-marker--charge",
+      html: `<span class="poi-pin" style="--pin:${catVar("car")}">${svgIcon("bolt")}</span>`,
+      iconSize: [27, 27],
+      iconAnchor: [13, 27],
+    });
+  }
+  return pinIcon(item, true);
+}
+
+function renderNearbyLayer(p) {
+  if (!map || !mapLayers.nearby) return;
+  mapLayers.nearby.clearLayers();
+  if (nearbyCircle && map.hasLayer(nearbyCircle)) map.removeLayer(nearbyCircle);
+  nearbyCircle = null;
+  if (!p) return;
+  const list = nearbyAround(p);
+  nearbyCircle = L.circle([p.lat, p.lng], {
+    radius: NEARBY_KM * 1000,
+    color: "#2b7cd3",
+    weight: 1.5,
+    opacity: 0.75,
+    fillColor: "#2b7cd3",
+    fillOpacity: 0.04,
+    dashArray: "5 6",
+    interactive: false,
+  }).addTo(map);
+  list.forEach((q) => {
+    const marker = L.marker([q.lat, q.lng], {
+      icon: nearbyIcon(q),
+      title: q.isCharge ? `${q.name} · ${q.power} kW` : q.name,
+      riseOnHover: true,
+      zIndexOffset: 500,
+    });
+    if (q.isCharge) {
+      marker.bindPopup(`<strong>${esc(q.name)}</strong>${q.rec ? ' <b style="color:#8a6d00">比價推薦</b>' : ""}<br><span style="color:#68756b">${esc(q.network || "")} · ${q.power} kW ${q.type || ""}<br>${esc(q.note || "")}</span>`);
+    } else {
+      marker.on("click", () => selectPOI(q.id));
+    }
+    marker.addTo(mapLayers.nearby);
+  });
+}
+
+function clearNearbyLayer() {
+  mapLayers.nearby?.clearLayers();
+  if (nearbyCircle && map && map.hasLayer(nearbyCircle)) map.removeLayer(nearbyCircle);
+  nearbyCircle = null;
+}
+
 function selectPOI(id, opts = {}) {
   const p = getPOI(id);
   if (!p) return;
@@ -1614,8 +1715,15 @@ function selectPOI(id, opts = {}) {
   renderMarkers();
   syncSelection();
   if (opts.fly !== false) {
-    const target = [p.lat, p.lng];
-    map?.flyTo(target, Math.max(map.getZoom(), 12), { duration: 0.7 });
+    if (state.view === "trip") {
+      map?.flyTo([p.lat, p.lng], Math.max(map.getZoom(), 12), { duration: 0.7 });
+    } else {
+      // 放大顯示該點＋附近 10 公里內的東西（至少放大到 13 級）
+      const nb = nearbyAround(p);
+      const pts = [[p.lat, p.lng], ...nb.map((q) => [q.lat, q.lng])];
+      if (pts.length > 1) map?.flyToBounds(L.latLngBounds(pts), { padding: [56, 56], maxZoom: 13, duration: 0.7 });
+      else map?.flyTo([p.lat, p.lng], 14, { duration: 0.7 });
+    }
   }
 }
 
@@ -1691,6 +1799,23 @@ function renderDetail(p) {
     </div>`;
   }
 
+  /* 附近 10 公里：地圖上同時顯示的周邊東西，點名稱可換成以那個點為中心 */
+  const nbList = nearbyAround(p);
+  const nbCounts = {};
+  nbList.forEach((q) => { const k = q.isCharge ? "charge" : q.cat; nbCounts[k] = (nbCounts[k] || 0) + 1; });
+  const nbLabel = { charge: "充電站", food: "美食", camp: "露營", car: "車宿", hike: "登山", bath: "澡點", sight: "景點" };
+  const nbCountTxt = Object.entries(nbCounts).map(([k, n]) => `${nbLabel[k] || k} ${n}`).join(" · ");
+  const nbTop = nbList.filter((q) => !q.isCharge).slice(0, 6);
+  const nearbyHtml = nbList.length
+    ? `<div class="pc-nearby-cars">
+        <div class="pc-nearby-title">📍 附近 10 公里（${esc(nbCountTxt)}）：</div>
+        ${nbTop.map((q) => {
+          const dTxt = q.dist < 1 ? `${Math.round(q.dist * 1000)} m` : `${q.dist.toFixed(1)} km`;
+          return `<div class="pc-nearby-row"><span><b>${esc(q.name)}</b> <small>(${nbLabel[q.cat] || q.cat} · ${dTxt})</small></span><button type="button" class="mini-btn" data-act="pick" data-id="${q.id}">看這裡</button></div>`;
+        }).join("")}
+      </div>`
+    : "";
+
   /* 澡點：只顯示名稱、縣市、鄉鎮、地址，不顯示電話 */
   let bathHtml = "";
   if (p.cat === "bath") {
@@ -1712,6 +1837,7 @@ function renderDetail(p) {
     ${sightHtml}
     ${bathHtml}
     ${nearbyCarHtml}
+    ${nearbyHtml}
     <div class="pc-actions">
       <button type="button" class="mini-btn ${added ? "" : "solid"}" data-act="add" data-id="${p.id}" ${added ? "disabled" : ""}>${added ? "已在行程中" : "＋ 加入行程"}</button>
       ${isFood ? "" : `<button type="button" class="mini-btn" data-act="nearby" data-id="${p.id}">附近美食</button>`}
@@ -1723,6 +1849,7 @@ function renderDetail(p) {
 
 function closeDetail(clearSelection = true) {
   $("#poiCard").hidden = true;
+  clearNearbyLayer();
   if (clearSelection) {
     state.selectedId = null;
     syncSelection();
@@ -2269,6 +2396,7 @@ function wireEvents() {
     if (!act) return;
     if (act.dataset.act === "add") addStop(act.dataset.id);
     if (act.dataset.act === "nearby") setAnchorAndFood(act.dataset.id);
+    if (act.dataset.act === "pick") selectPOI(act.dataset.id);
   });
 
   $("#poiCardClose").addEventListener("click", () => closeDetail());
