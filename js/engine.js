@@ -30,6 +30,10 @@ const EV_DEFAULTS = {
   load: "duo",
   drive: "mixed",
   weather: "sunny",
+  // F3 情境開關（預設全關）：scenarioRain＝下雨、scenarioCold＝低溫（<10°C）。
+  // 由 weather.js 的 getScenario() 經 app.js plan() 寫入。
+  scenarioRain: false,
+  scenarioCold: false,
 };
 
 /**
@@ -179,11 +183,19 @@ function estimateLeg(a, b) {
  */
 function computeEv(ev) {
   const vehicle = activeVehicle(ev);
+  // F3 情境加成（預設全關時因子恆為 1，不動任何既有數字）：
+  // 耗電增加 ⇔ 每度電里程下降。耗電 ×1.08 ⇔ 里程 ×(1/1.08)＝×0.9259…；
+  // 耗電 ×1.10 ⇔ 里程 ×(1/1.10)＝×0.9090…；雙開耗電 ×1.188 ⇔ 里程 ×(1/1.188)＝×0.8417…。
+  // 注意：這裡不改 mult（氣溫／空調／載重／天候的既有打折），只另乘一個獨立因子，
+  // 且 factors.scenario 單獨列出，方便 UI 標示「情境造成多少」。
+  const scenarioEnergy = (ev.scenarioRain ? 1.08 : 1) * (ev.scenarioCold ? 1.10 : 1);
+  const scenarioKmFactor = 1 / scenarioEnergy;
   const factors = {
     temp: tempFactor(clamp(Number(ev.temp) || 0, -10, 40)),
     ac: AC_FACTORS[ev.ac] ?? AC_FACTORS.mid,
     load: LOAD_FACTORS[ev.load] ?? LOAD_FACTORS.duo,
     weather: WEATHER_FACTORS[ev.weather] ?? WEATHER_FACTORS.sunny,
+    scenario: scenarioKmFactor,
   };
   const mult = factors.temp * factors.ac * factors.load * factors.weather;
   const baseRoad = Math.max(1.5, Number(vehicle.road) || 6.7);
@@ -197,9 +209,9 @@ function computeEv(ev) {
     climb: capacity * baseClimb,
   };
   const kmPerKwh = {
-    road: Math.max(1.2, baseRoad * mult),
-    highway: Math.max(1.2, baseHighway * mult),
-    climb: Math.max(1.0, baseClimb * mult),
+    road: Math.max(1.2, baseRoad * mult * scenarioKmFactor),
+    highway: Math.max(1.2, baseHighway * mult * scenarioKmFactor),
+    climb: Math.max(1.0, baseClimb * mult * scenarioKmFactor),
   };
   // 納入氣溫／空調／載重／天候後的 100% 滿電實際里程
   const fullRanges = {
@@ -223,6 +235,13 @@ function computeEv(ev) {
     rangeCheck: vehicleRangeCheck(vehicle),
     factors,
     mult,
+    // F3：情境生效狀態（新增欄位，不動既有欄位）。預設全關時 energyFactor＝1、kmFactor＝1。
+    scenario: {
+      rain: !!ev.scenarioRain,
+      cold: !!ev.scenarioCold,
+      energyFactor: scenarioEnergy,
+      kmFactor: scenarioKmFactor,
+    },
     fullRange,
     usableRange,
     idealRanges,

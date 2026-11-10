@@ -37,6 +37,15 @@ function fmtChargeTime(minutes) {
   return `${m} 分鐘`;
 }
 
+/** 過夜充電排程每晚一行的文字（Phase 3 功能 4，三處顯示共用） */
+function overnightLineHTML(row) {
+  if (!row) return "";
+  if (!row.kwh || row.kwh <= 0) return `過夜充電：${esc(row.note || "不需過夜補電")}`;
+  const est = row.rateEstimated ? "（電價為估計）" : "";
+  const at = row.charger ? `在「${esc(row.charger.name)}」` : "（無合適充電站）";
+  return `過夜充電：${at}充到 ${row.targetSoc}% · 約 ${row.kwh.toFixed(1)} 度 · 約 ${fmtChargeTime(row.minutes)} · 約 NT$${row.cost.toLocaleString("zh-TW")}${est}`;
+}
+
 function fmtRoadBreakdown(detail) {
   if (!detail) return "";
   const parts = [];
@@ -49,9 +58,41 @@ function fmtRoadBreakdown(detail) {
 /* ---------------- 行程 ---------------- */
 function renderTrip() {
   const p = plan();
+  /* 過夜充電排程與費用估算（Phase 3 功能 4，js/overnight.js） */
+  const overnight = (typeof overnightSchedule === "function")
+    ? overnightSchedule(p, CHARGERS)
+    : [];
+  const overnightCost = (typeof overnightTotalCost === "function")
+    ? overnightTotalCost(overnight)
+    : { totalKwh: 0, totalMinutes: 0, totalCost: 0, estimatedCount: 0, chargedNights: 0, nights: 0 };
+  const tripCost = (typeof tripChargesCost === "function")
+    ? tripChargesCost(p, CHARGERS)
+    : { totalKwh: 0, totalMinutes: 0, totalCost: 0, estimatedCount: 0 };
+  const chargingTotalCost = tripCost.totalCost + overnightCost.totalCost;
+  const chargingTotalKwh = Math.round((tripCost.totalKwh + overnightCost.totalKwh) * 10) / 10;
+  const chargingEstimatedCount = tripCost.estimatedCount + overnightCost.estimatedCount;
   const list = stops();
   const start = startPoint();
   const calc = p.calc;
+  /* F3 情境開關同步：checkbox 狀態、效果說明、「已套用」標示 */
+  const scn = typeof getScenario === "function" ? getScenario() : { rain: false, cold: false };
+  const rainBox = $("#scenarioRain");
+  if (rainBox) rainBox.checked = !!scn.rain;
+  const coldBox = $("#scenarioCold");
+  if (coldBox) coldBox.checked = !!scn.cold;
+  const scnNotes = $("#scenarioNotes");
+  if (scnNotes && typeof scenarioNotes === "function") {
+    scnNotes.innerHTML = scenarioNotes(scn).map((n) => `<li>${esc(n)}</li>`).join("");
+  }
+  const scnApplied = $("#scenarioApplied");
+  if (scnApplied) {
+    const names = typeof scenarioActiveNames === "function" ? scenarioActiveNames(scn) : [];
+    scnApplied.hidden = names.length === 0;
+    if (names.length) {
+      const f = typeof scenarioEnergyFactor === "function" ? scenarioEnergyFactor(scn) : 1;
+      scnApplied.textContent = `已套用${names.join("＋")}情境：EV 耗電 ×${f}（每度電里程 ×${(1 / f).toFixed(3)}）`;
+    }
+  }
   const reserve = Number(state.ev.reserve) || 0;
 
   /* 終點預留電量（行程面板直接詢問與調整） */
@@ -103,6 +144,14 @@ function renderTrip() {
   if (ovSel) ovSel.value = state.ev.overnightMode || "camp-ac";
   const ovWrap = $("#overnightModeWrap");
   if (ovWrap) ovWrap.hidden = (clamp(Number(state.ev.tripDays) || 1, 1, 7) <= 1);
+  /* 過夜充電預設電價編輯器（Phase 3 功能 4） */
+  const rateWrap = $("#overnightRateWrap");
+  if (rateWrap && typeof renderRateEditor === "function") {
+    rateWrap.innerHTML = renderRateEditor();
+    if (typeof bindRateEditor === "function") {
+      bindRateEditor(rateWrap, () => renderTrip());
+    }
+  }
 
   /* 走法選擇＋路線比較＋沿途服務區（國道走法才列服務區） */
   const routeBlock = $("#routeModeBlock");
@@ -252,6 +301,7 @@ function renderTrip() {
     <div class="stat"><span>行車耗電</span><strong>${p.totalEnergy.toFixed(1)}<em>度 kWh</em></strong></div>
     <div class="stat ${socTone}"><span>抵達終點電量</span><strong>${fmtSoc(p.finalSoc)}</strong></div>
     <div class="stat"><span>補電次數</span><strong>${p.charges.length}<em>次</em></strong></div>
+    <div class="stat" title="行程中充電 NT$${tripCost.totalCost.toLocaleString("zh-TW")}＋過夜充電 NT$${overnightCost.totalCost.toLocaleString("zh-TW")}；${chargingEstimatedCount ? `其中 ${chargingEstimatedCount} 筆費率以預設電價估計` : "費率皆取自充電站標示"}"><span>充電總費用估算${chargingEstimatedCount ? "（含估計）" : ""}</span><strong>NT$${chargingTotalCost.toLocaleString("zh-TW")}</strong></div>
   `;
 
   /* 電量條 */
@@ -287,6 +337,9 @@ function renderTrip() {
       <div class="stop-tools">
         <button type="button" class="tool-btn" data-tool="focus" data-id="${start.id || ""}" title="在地圖上查看" aria-label="在地圖上查看出發地">${svgIcon("pin")}</button>
       </div>
+      ${state.startCustom && state.startCustom.id === "geo" && list.length
+    ? `<div class="stop-nav"><a class="mini-btn" href="${navUrl(list[0])}" target="_blank" rel="noopener">📍 從目前位置導航到「${esc(list[0].name)}」</a></div>`
+    : ""}
     </li>
   `;
 
@@ -368,6 +421,13 @@ function renderTrip() {
     }).join("");
   }
 
+  /* TDX 整批狀態列（由 refreshTdxLiveForChargers 回填；未設定 Key 時顯示註冊說明）。 */
+  var chargePlanEl = $("#chargePlan");
+  if (chargePlanEl && !chargePlanEl.previousElementSibling?.hasAttribute?.("data-tdx-batch")) {
+    chargePlanEl.insertAdjacentHTML("beforebegin",
+      '<div class="live-status" data-tdx-batch>⚡ 充電站即時狀態：查詢中…</div>');
+  }
+
   /* 補電建議 */
   if (!p.charges.length) {
     $("#chargePlan").innerHTML = `<div class="charge-none">${list.length
@@ -393,12 +453,14 @@ function renderTrip() {
         <div class="charge-body">
           <strong>${title} ${recBadge}</strong>
           <p><b>${esc(c.charger.name)}</b> · ${esc(c.charger.network)} · ${c.charger.power} kW ${isAC ? "AC 慢充" : "DC 快充"}（${esc(c.charger.connectors || "CCS1")}）${isAC ? "" : ` · 距山上目的地約 ${c.dist.toFixed(1)} km`}${addrText}</p>
-          <p class="charge-meta">抵達充電站約 ${Math.round(c.from)}% → 建議充至 <b>${Math.round(c.to)}%</b> · 約需 <b>${fmtChargeTime(c.minutes)}</b>${isAC ? "（建議過夜慢充）" : ""} · <a href="https://www.google.com/maps/dir/?api=1&destination=${c.charger.lat},${c.charger.lng}&travelmode=driving" target="_blank" rel="noopener" style="color:var(--charge);text-decoration:underline">導航至此充電站</a></p>
+          <p class="charge-meta">抵達充電站約 ${Math.round(c.from)}% → 建議充至 <b>${Math.round(c.to)}%</b> · 約需 <b>${fmtChargeTime(c.minutes)}</b>${isAC ? "（建議過夜慢充）" : ""} · <a href="${navUrl(c.charger)}" target="_blank" rel="noopener" style="color:var(--charge);text-decoration:underline">導航至此充電站</a></p>
+          <p><span class="live-status" data-tdx-live-for="${esc(c.charger.id)}">⚡ 即時：查詢中…</span></p>
         </div>
       </div>`;
     }).join("");
   }
   renderDestChargers(p, list);
+  refreshTdxLiveForChargers((p.charges || []).map((c) => c.charger));
 
   /* 分日行程 */
   const dayWrap = $("#dayPlanWrap");
@@ -443,6 +505,12 @@ function renderTrip() {
           <div class="day-card-route">${routeText}</div>
           <div class="day-card-meta">里程 ${fmtKm(d.km, 1)} km · 耗電 ${d.energy.toFixed(1)} 度 · 行車 ${fmtDuration(d.minutes / 60)}${d.startSoc !== null ? ` · 出發 ${fmtSoc(d.startSoc)} → 收尾 ${fmtSoc(d.endSoc)}` : ""}</div>
           <div class="day-card-meta">補電：${chargeText}</div>
+          ${(() => {
+            const ov = overnight.find((r) => r.night === d.day);
+            if (ov) return `<div class="day-card-meta">${overnightLineHTML(ov)}</div>`;
+            if (d.day === 1 && overnight.length === 0 && overnight.note) return `<div class="day-card-meta">過夜充電：${esc(overnight.note)}</div>`;
+            return "";
+          })()}
           ${corridorHtml}
           ${lunchHtml}
           ${d.morningStay ? `<div class="day-card-meta">🌙 前一晚在「${esc(d.morningStay.at.name)}」過夜：${esc(d.morningStay.label)}，早上出發 ${fmtSoc(d.morningStay.afterSoc)}</div>` : ""}
@@ -526,6 +594,12 @@ function renderTrip() {
           <thead><tr><th>#</th><th>充電站</th><th>電量</th><th>時間</th><th>補充</th><th>地址／備註</th></tr></thead>
           <tbody>${chargeRows}</tbody>
         </table>
+        <h3>過夜充電</h3>
+        <table class="print-table">
+          <thead><tr><th>晚</th><th>過夜點</th><th>充電站</th><th>充到</th><th>約幾度</th><th>約幾分鐘</th><th>約多少錢</th></tr></thead>
+          <tbody>${overnight.length ? overnight.map((r) => `<tr><td>第 ${r.night} 晚</td><td><b>${esc(r.stayName)}</b></td><td>${r.charger ? esc(r.charger.name) : "無合適充電站"}</td><td>${r.kwh > 0 ? `${r.targetSoc}%` : "—"}</td><td>${r.kwh > 0 ? `${r.kwh.toFixed(1)} 度` : "—"}</td><td>${r.kwh > 0 ? fmtChargeTime(r.minutes) : "—"}</td><td>${r.kwh > 0 ? `NT$${r.cost.toLocaleString("zh-TW")}${r.rateEstimated ? "（電價為估計）" : ""}` : "NT$0"}</td></tr>`).join("") : `<tr><td colspan="7">${esc(overnight.note || "無過夜充電")}</td></tr>`}</tbody>
+        </table>
+        <p class="print-sheet-meta">充電總費用估算：NT$${chargingTotalCost.toLocaleString("zh-TW")}（行程中充電 NT$${tripCost.totalCost.toLocaleString("zh-TW")}＋過夜充電 NT$${overnightCost.totalCost.toLocaleString("zh-TW")}，共約 ${chargingTotalKwh.toFixed(1)} 度）${chargingEstimatedCount ? `；其中 ${chargingEstimatedCount} 筆費率以預設電價 NT$${getDefaultRate()}/度估計，出發前請以充電商 App 確認` : "；費率皆取自充電站標示，出發前請以充電商 App 確認"}。</p>
         ${hwRows ? `<h3>沿途服務區</h3><table class="print-table"><thead><tr><th>#</th><th>服務區</th><th>國道里程</th><th>位置</th><th>狀態</th></tr></thead><tbody>${hwRows}</tbody></table>` : ""}
         <h3>提醒</h3>
         <ul class="print-warns">${warnRows}</ul>
@@ -533,7 +607,44 @@ function renderTrip() {
     }
   }
 
+  refreshTripWeather(false);
   renderSaved();
+}
+
+/* F3：行程卡天氣（非同步，失敗只顯示錯誤＋重試，不擋行程計算）。
+   以最後一站為預報點；無站點時以出發地為預報點。30 分鐘快取在 weather.js 內，
+   renderTrip() 常被重呼叫也不會重抓；sig 變了（換站點）才重抓。 */
+let tripWeatherSig = "";
+let tripWeatherLoading = false;
+async function refreshTripWeather(force) {
+  const wrap = $("#weatherWrap");
+  if (!wrap || typeof getForecastForPoint !== "function") return;
+  const list = stops();
+  const point = list.length ? list[list.length - 1] : startPoint();
+  if (!point || !Number.isFinite(Number(point.lat))) {
+    wrap.innerHTML = typeof weatherErrorHtml === "function"
+      ? weatherErrorHtml("尚未選定地點，無法抓取天氣預報。", { noRetry: true }) : "";
+    return;
+  }
+  const sig = `${point.id || point.name}|${point.lat},${point.lng}`;
+  if (!force && sig === tripWeatherSig && wrap.dataset.loaded === "1") return;
+  if (tripWeatherLoading) return;
+  tripWeatherSig = sig;
+  tripWeatherLoading = true;
+  if (!wrap.dataset.loaded) wrap.innerHTML = `<div class="wx-block"><b>天氣預報</b><p>抓取中…（來源：${typeof hasCwaKey === "function" && hasCwaKey() ? "中央氣象署" : "Open-Meteo"}）</p></div>`;
+  try {
+    const fc = await getForecastForPoint(point, {
+      county: point.county || point.region || "",
+      township: point.township || "",
+    });
+    wrap.innerHTML = weatherHtml(fc);
+    wrap.dataset.loaded = "1";
+  } catch (err) {
+    wrap.innerHTML = weatherErrorHtml(err && err.message ? err.message : "預報抓取失敗，請檢查網路後重試。");
+    wrap.dataset.loaded = "";
+  } finally {
+    tripWeatherLoading = false;
+  }
 }
 
 /* ---------------- 目的地周邊充電站（開車路程，rangePick） ----------------
@@ -567,10 +678,12 @@ function renderDestChargers(p, list) {
           <b>${esc(c.name)}</b>${c.rec ? ` <span class="badge rec-badge">比價推薦</span>` : ""}
           <span>${esc(c.network || "")} · ${c.power} kW ${c.type}（${esc(c.connectors || "CCS1")}）</span>
           <span>開車約 ${km.toFixed(1)} km${c.price ? ` · ${esc(c.price)} <span class="price-note">（出發前請用各家 APP 確認）</span>` : " · 出發前請用各家 APP 確認價格"}</span>
+          <span class="live-status" data-tdx-live-for="${esc(c.id)}">⚡ 即時：查詢中…</span>
         </div>
-        <a class="mini-btn" href="https://www.google.com/maps/dir/?api=1&destination=${c.lat},${c.lng}&travelmode=driving" target="_blank" rel="noopener" style="text-align:center;line-height:24px">導航</a>
+        <a class="mini-btn" href="${navUrl(c)}" target="_blank" rel="noopener" style="text-align:center;line-height:24px">導航</a>
       </div>`;
     }).join("");
+    refreshTdxLiveForChargers(rows.map((r) => r.item || r.charger));
   };
 
   if (typeof rangePickStraight === "function") {
@@ -655,7 +768,7 @@ function renderTripNearby(list) {
               <p class="tn-spot-desc">${esc(s.desc || s.address || s.region || "")}</p>
               <div class="tn-spot-acts">
                 <button type="button" class="mini-btn" data-tn-focus="${s.id}">看地圖</button>
-                <a class="mini-btn" href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}&travelmode=driving" target="_blank" rel="noopener" style="text-align:center;line-height:24px">導航</a>
+                <a class="mini-btn" href="${navUrl(s)}" target="_blank" rel="noopener" style="text-align:center;line-height:24px">導航</a>
                 <button type="button" class="mini-btn ${added ? "" : "solid"}" data-tn-add="${s.id}" ${added ? "disabled" : ""}>${added ? "已加入" : "＋ 順遊加入"}</button>
               </div>
             </div>`;
@@ -965,6 +1078,25 @@ function renderEvPanel() {
 
     <div class="factor-list" id="evFactors"></div>
     <p class="factor-foot">各項環境係數為相乘關係；爬升耗電直接依您設定的「爬坡每度電幾公里（km/kWh）」計算，不計下坡回充，屬安全保守估算。車宿點的預留電量請在「行程」分頁設定（高山車宿建議留 30%～40%）。</p>
+    <div class="garage-form" id="tdxKeyBox">
+      <div class="garage-form-header">
+        <p class="garage-form-title">充電站即時狀態（TDX）<span>輸入你自己的 TDX Key 才會查詢即時空位；不輸入也能正常用行程規劃</span></p>
+      </div>
+      <label class="text-field">
+        <span>TDX Client Id</span>
+        <input type="text" id="tdxClientId" placeholder="例如：YOUR_CLIENT_ID" autocomplete="off" />
+      </label>
+      <label class="text-field">
+        <span>TDX Client Secret</span>
+        <input type="password" id="tdxClientSecret" placeholder="貼上你的 Client Secret" autocomplete="off" />
+      </label>
+      <div class="garage-actions">
+        <button type="button" class="primary-btn" data-tdx-save="1">儲存 TDX Key</button>
+        <button type="button" class="ghost-btn" data-tdx-clear="1">清除 TDX Key</button>
+      </div>
+      <p class="garage-form-note" id="tdxKeyStatus">尚未設定 TDX Key：即時狀態會顯示「未設定 TDX Key」。Key 只存在你這台瀏覽器，不會上傳或寫進程式碼。申請：先到 <a href="https://tdx.transportdata.tw/register" target="_blank" rel="noopener">TDX 註冊會員</a>，再到 <a href="https://tdx.transportdata.tw/user/dataservice/key" target="_blank" rel="noopener">會員中心 → 資料服務 → API 金鑰</a>取得 Client Id／Client Secret。資料來源：TDX 交通部運輸資料流通服務，每 1 分鐘更新。</p>
+    </div>
+
     <div class="ev-note" style="margin-top:12px">
       <span>ⓘ</span>
       <span>補電點已整合 <b>LuxClub N7 充電地圖（全台超過 700 座 CCS1／J1772 站點）</b> 與精選高功率快充站。出發前請以充電商 App 確認即時空位。</span>
@@ -972,6 +1104,47 @@ function renderEvPanel() {
   `;
 
   renderEvOutputs();
+  syncTdxKeyBox();
+}
+
+/* TDX Key 欄位：把已存憑證填回輸入框，並更新狀態文字。 */
+function syncTdxKeyBox() {
+  if (typeof getTdxCredentials !== "function") return;
+  var c = getTdxCredentials();
+  var idInput = $("#tdxClientId");
+  var secretInput = $("#tdxClientSecret");
+  var status = $("#tdxKeyStatus");
+  if (idInput) idInput.value = c.clientId || "";
+  if (secretInput) secretInput.value = c.clientSecret || "";
+  if (status) {
+    status.textContent = (c.clientId && c.clientSecret)
+      ? "已設定 TDX Key（Client Id：" + c.clientId + "）。即時狀態會在充電站彈窗、充電計畫與目的地周邊清單顯示，來源 TDX，每 1 分鐘更新。"
+      : "尚未設定 TDX Key：即時狀態會顯示「未設定 TDX Key」。Key 只存在你這台瀏覽器，不會上傳或寫進程式碼。";
+  }
+}
+
+/* 依充電站清單查一次 TDX 即時狀態，把結果填進畫面上所有
+   [data-tdx-live-for="<charger id>"] 佔位元素（充電計畫、目的地周邊、彈窗共用）。
+   失敗時顯示原因＋重試按鈕，絕不留白；60 秒內重複呼叫由 live-status.js 記憶體快取擋下。 */
+function refreshTdxLiveForChargers(chargers) {
+  if (typeof fetchTdxLiveStatus !== "function") return;
+  var list = (chargers || []).filter(Boolean);
+  if (!list.length) return;
+  fetchTdxLiveStatus(list).then(function (batch) {
+    (batch.results || []).forEach(function (r) {
+      var id = r.charger && r.charger.id;
+      if (!id) return;
+      document.querySelectorAll('[data-tdx-live-for="' + id + '"]').forEach(function (el) {
+        el.outerHTML = tdxStatusHtml(r);
+      });
+    });
+    var banner = document.querySelector("[data-tdx-batch]");
+    if (banner && typeof tdxBatchStatusHtml === "function") {
+      banner.outerHTML = tdxBatchStatusHtml(batch);
+    }
+  }).catch(function () {
+    /* fetchTdxLiveStatus 承諾不拋錯；此 catch 純防呆，不改畫面。 */
+  });
 }
 
 function updateVehConversionBox() {
@@ -1195,6 +1368,30 @@ function wirePlanner() {
   });
 
   evPanel?.addEventListener("click", (e) => {
+    const tdxSave = e.target.closest("[data-tdx-save]");
+    if (tdxSave) {
+      if (typeof saveTdxCredentials === "function") {
+        var ok = saveTdxCredentials($("#tdxClientId")?.value || "", $("#tdxClientSecret")?.value || "");
+        toast(ok ? "已儲存 TDX Key" : "儲存失敗，請檢查瀏覽器設定");
+        syncTdxKeyBox();
+        renderTrip();
+      }
+      return;
+    }
+    const tdxClear = e.target.closest("[data-tdx-clear]");
+    if (tdxClear) {
+      if (typeof clearTdxCredentials === "function") clearTdxCredentials();
+      syncTdxKeyBox();
+      renderTrip();
+      toast("已清除 TDX Key");
+      return;
+    }
+    const tdxRetry = e.target.closest("[data-tdx-retry]");
+    if (tdxRetry) {
+      /* 重試：清掉 60 秒快取概念上由重新查詢處理；直接重跑整段行程渲染即可。 */
+      renderTrip();
+      return;
+    }
     const presetBtn = e.target.closest("[data-veh-preset]");
     if (presetBtn) { fillVehiclePreset(presetBtn.dataset.vehPreset); return; }
     const actBtn = e.target.closest("[data-vehicle-act]");
@@ -1226,6 +1423,11 @@ function wirePlanner() {
   $("#baseModeSelect")?.addEventListener("change", (e) => {
     state.ev.baseChargeMode = e.target.value || "auto";
     persist();
+    renderTrip();
+  });
+  /* TDX 重試按鈕（充電計畫／目的地周邊／彈窗內皆由此委派處理）。 */
+  document.querySelector("#panel-trip")?.addEventListener("click", (e) => {
+    if (!e.target.closest("[data-tdx-retry]")) return;
     renderTrip();
   });
 

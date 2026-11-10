@@ -293,7 +293,10 @@ function anchorPoint() {
 }
 
 function plan() {
-  const ev = state.ev;
+  // F3：情境開關是 localStorage 的單一真相來源（weather.js getScenario），
+  // 每次算行程都重新讀入；用展開複製，不直接改 state.ev，避免存檔欄位被意外改寫。
+  const scn = typeof getScenario === "function" ? getScenario() : { rain: false, cold: false };
+  const ev = { ...state.ev, scenarioRain: scn.rain, scenarioCold: scn.cold };
   const list = stops();
   return buildTripPlan({
     start: startPoint(),
@@ -1065,7 +1068,7 @@ function renderFood() {
         <p class="food-desc">${esc(f.desc || f.address || f.region || "")}</p>
       </div>
       <div class="food-tools">
-        <a class="mini-btn" href="https://www.google.com/maps/dir/?api=1&destination=${f.lat},${f.lng}&travelmode=driving" target="_blank" rel="noopener" style="text-align:center;line-height:24px">導航</a>
+        <a class="mini-btn" href="${navUrl(f)}" target="_blank" rel="noopener" style="text-align:center;line-height:24px">導航</a>
         ${isLive ? "" : `<button type="button" class="mini-btn ${added ? "" : "solid"}" data-act="add-food" data-food="${i}" ${added ? "disabled" : ""}>${added ? "已加入" : "加入"}</button>`}
       </div>
     </div>`;
@@ -1269,6 +1272,8 @@ function initMap() {
 
   mapLayers.route = L.layerGroup().addTo(map);
   mapLayers.nearby = L.layerGroup().addTo(map);
+  mapLayers.trail = L.layerGroup().addTo(map);
+  mapLayers.geo = L.layerGroup().addTo(map); // 目前位置藍點（獨立圖層，不隨 renderRoute 清掉）
 
   if (typeof L.markerClusterGroup === "function") {
     const clusterIcon = (cls) => (cluster) => {
@@ -1490,7 +1495,7 @@ function renderMarkers() {
 
   if (state.showChargers) {
     CHARGERS.forEach((c) => {
-      L.marker([c.lat, c.lng], {
+      const chargerMarker = L.marker([c.lat, c.lng], {
         icon: L.divIcon({
           className: "poi-marker poi-marker--charge",
           html: `<span class="poi-pin" style="--pin:${catVar("car")}">${svgIcon("bolt")}</span>`,
@@ -1499,9 +1504,14 @@ function renderMarkers() {
         }),
         title: `${c.name} · ${c.power} kW`,
         riseOnHover: true,
-      }).bindPopup(
-        `<strong>${esc(c.name)}</strong>${c.rec ? ' <b style="color:#8a6d00">比價推薦</b>' : ""}<br><span style="color:#68756b">${esc(c.network)} · ${c.power} kW ${c.type}<br>${esc(c.note)}</span>`
-      ).addTo(mapLayers.chargers);
+      });
+      chargerMarker.bindPopup(
+        `<strong>${esc(c.name)}</strong>${c.rec ? ' <b style="color:#8a6d00">比價推薦</b>' : ""}<br><span style="color:#68756b">${esc(c.network)} · ${c.power} kW ${c.type}<br>${esc(c.note)}</span><br><span class="live-status" data-tdx-live-for="${esc(c.id)}">⚡ 即時：查詢中…</span>`
+      );
+      chargerMarker.on("popupopen", () => {
+        if (typeof refreshTdxLiveForChargers === "function") refreshTdxLiveForChargers([c]);
+      });
+      chargerMarker.addTo(mapLayers.chargers);
     });
     if (!map.hasLayer(mapLayers.chargers)) mapLayers.chargers.addTo(map);
   } else if (map.hasLayer(mapLayers.chargers)) {
@@ -1518,6 +1528,52 @@ function renderMarkers() {
 
   renderRoute();
   updateMapCount();
+}
+
+// 導航連結：出發地是定位來的（state.startCustom.id === "geo"）才帶 origin=目前位置；
+// 否則只帶 destination（沿用現有行為，不把固定出發地座標假裝成使用者位置）。
+// dest 須有 lat / lng（POI、充電站、登山口皆有）。
+function navUrl(dest) {
+  const base = "https://www.google.com/maps/dir/?api=1";
+  if (state.startCustom && state.startCustom.id === "geo") {
+    const s = startPoint();
+    return `${base}&origin=${s.lat},${s.lng}&destination=${dest.lat},${dest.lng}&travelmode=driving`;
+  }
+  return `${base}&destination=${dest.lat},${dest.lng}&travelmode=driving`;
+}
+
+// 目前位置藍點：只有出發地是定位來的（state.startCustom.id === "geo"）才顯示。
+// 用 Leaflet 內建 circleMarker 畫藍點＋外圈，不依賴額外圖檔；標籤用 divIcon。
+function renderGeoMarker() {
+  if (!map || !mapLayers.geo) return;
+  mapLayers.geo.clearLayers();
+  const s = startPoint();
+  if (!state.startCustom || state.startCustom.id !== "geo") return;
+  L.circleMarker([s.lat, s.lng], {
+    radius: 8,
+    color: "#ffffff",
+    weight: 2.5,
+    fillColor: "#1a73e8",
+    fillOpacity: 1,
+    interactive: false,
+  }).addTo(mapLayers.geo);
+  L.circleMarker([s.lat, s.lng], {
+    radius: 18,
+    color: "#1a73e8",
+    weight: 1.5,
+    fillColor: "#1a73e8",
+    fillOpacity: 0.12,
+    interactive: false,
+  }).addTo(mapLayers.geo);
+  L.marker([s.lat, s.lng], {
+    icon: L.divIcon({
+      className: "geo-label",
+      html: `<span class="geo-label-text">你現在在這裡</span>`,
+      iconSize: [110, 22],
+      iconAnchor: [55, -12],
+    }),
+    interactive: false,
+  }).addTo(mapLayers.geo);
 }
 
 function renderRoute() {
@@ -1692,7 +1748,10 @@ function renderNearbyLayer(p) {
       zIndexOffset: 500,
     });
     if (q.isCharge) {
-      marker.bindPopup(`<strong>${esc(q.name)}</strong>${q.rec ? ' <b style="color:#8a6d00">比價推薦</b>' : ""}<br><span style="color:#68756b">${esc(q.network || "")} · ${q.power} kW ${q.type || ""}<br>${esc(q.note || "")}</span>`);
+      marker.bindPopup(`<strong>${esc(q.name)}</strong>${q.rec ? ' <b style="color:#8a6d00">比價推薦</b>' : ""}<br><span style="color:#68756b">${esc(q.network || "")} · ${q.power} kW ${q.type || ""}<br>${esc(q.note || "")}</span><br><span class="live-status" data-tdx-live-for="${esc(q.id)}">⚡ 即時：查詢中…</span>`);
+      marker.on("popupopen", () => {
+        if (typeof refreshTdxLiveForChargers === "function") refreshTdxLiveForChargers([q]);
+      });
     } else {
       marker.on("click", () => selectPOI(q.id));
     }
@@ -1711,6 +1770,7 @@ function selectPOI(id, opts = {}) {
   if (!p) return;
   state.selectedId = id;
   renderDetail(p);
+  if (typeof bindTrailToDetail === "function") bindTrailToDetail(p);
   if (state.view === "explore") renderMountainHelper();
   renderMarkers();
   syncSelection();
@@ -1774,14 +1834,16 @@ function renderDetail(p) {
           const pkTxt = Array.isArray(t.pk) && t.pk.length
             ? ` · 附近停車場 ${t.pk.length} 處${t.pk[0] && t.pk[0].n ? `（${esc(String(t.pk[0].n))}）` : ""}`
             : "";
-          return `<div class="pc-access-row"><b>${esc(t.n || "登山口")}</b><span>${pkTxt}</span><a class="mini-btn" href="https://www.google.com/maps/dir/?api=1&destination=${t.la},${t.lo}&travelmode=driving" target="_blank" rel="noopener">導航</a></div>`;
+          return `<div class="pc-access-row"><b>${esc(t.n || "登山口")}</b><span>${pkTxt}</span><a class="mini-btn" href="${navUrl({ lat: t.la, lng: t.lo })}" target="_blank" rel="noopener">導航</a></div>`;
         }).join("")
       : `<div class="pc-access-title">登山口／停車場</div><p class="pc-note">本座尚無登山口資料。</p>`;
     const trHtml = tr.length
       ? `<div class="pc-access-title">周邊步道（${tr.length} 條）</div>` + tr.map((t) => {
           const url = t.url || (t.bid ? `https://hiking.biji.co/index.php?q=trail&act=detail&id=${t.bid}` : "");
           // tr.len 已含單位（如 "3.5 公里"），直接顯示不另加單位
-          const meta = [t.len ? String(t.len) : "", t.time || "", t.dif || ""].filter(Boolean).join(" · ");
+          // F3：步道時間是資料文字（如 "3 小時"），下雨情境開啟時 ×1.25；解析不到就原字串顯示。
+          const hikeTime = typeof adjustHikeTimeText === "function" ? adjustHikeTimeText(t.time || "") : (t.time || "");
+          const meta = [t.len ? String(t.len) : "", hikeTime, t.dif || ""].filter(Boolean).join(" · ");
           return `<div class="pc-access-row"><b>${esc(t.n || "步道")}</b>${meta ? `<span> · ${esc(meta)}</span>` : ""}${url ? `<a class="mini-btn" href="${esc(url)}" target="_blank" rel="noopener">健行筆記</a>` : ""}</div>`;
         }).join("")
       : `<div class="pc-access-title">周邊步道</div><p class="pc-note">本座尚無步道資料。</p>`;
@@ -1816,6 +1878,11 @@ function renderDetail(p) {
       </div>`
     : "";
 
+  /* 營地／車宿點訂位深連結（live-status.js）：愛露營搜尋＋露營樂查訂空位。
+     兩平台皆無即時空位公開 API，文案已註明「點進訂位頁確認」，不顯示空位數字。 */
+  const bookingHtml = (p.cat === "camp" || p.cat === "car")
+    && typeof campBookingHtml === "function" ? campBookingHtml(p) : "";
+
   /* 澡點：只顯示名稱、縣市、鄉鎮、地址，不顯示電話 */
   let bathHtml = "";
   if (p.cat === "bath") {
@@ -1834,22 +1901,42 @@ function renderDetail(p) {
     <p class="pc-desc">${esc(p.desc || "")}</p>
     ${p.note ? `<p class="pc-note">注意：${esc(p.note)}</p>` : ""}
     ${peakAccessHtml}
+    ${typeof trailSectionPlaceholder === "function" ? trailSectionPlaceholder(p) : ""}
     ${sightHtml}
     ${bathHtml}
+    ${bookingHtml}
     ${nearbyCarHtml}
     ${nearbyHtml}
+    <div class="pc-weather" data-weather-for="${esc(p.id)}">天氣預報載入中…</div>
     <div class="pc-actions">
       <button type="button" class="mini-btn ${added ? "" : "solid"}" data-act="add" data-id="${p.id}" ${added ? "disabled" : ""}>${added ? "已在行程中" : "＋ 加入行程"}</button>
       ${isFood ? "" : `<button type="button" class="mini-btn" data-act="nearby" data-id="${p.id}">附近美食</button>`}
-      <a class="mini-btn" href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving" target="_blank" rel="noopener" style="text-align:center;line-height:26px">導航</a>
+      <a class="mini-btn" href="${navUrl(p)}" target="_blank" rel="noopener" style="text-align:center;line-height:26px">導航</a>
     </div>
   `;
   card.hidden = false;
+  loadDetailWeather(p);
+}
+
+/* F3：詳情卡天氣（非同步；失敗顯示錯誤＋重試，不留白、不編數字）。 */
+async function loadDetailWeather(p) {
+  const box = document.querySelector(`[data-weather-for="${CSS.escape(p.id)}"]`);
+  if (!box || typeof getForecastForPoint !== "function") return;
+  try {
+    const fc = await getForecastForPoint(p, {
+      county: p.county || p.region || "",
+      township: p.township || "",
+    });
+    box.innerHTML = weatherHtml(fc);
+  } catch (err) {
+    box.innerHTML = weatherErrorHtml(err && err.message ? err.message : "預報抓取失敗，請檢查網路後重試。");
+  }
 }
 
 function closeDetail(clearSelection = true) {
   $("#poiCard").hidden = true;
   clearNearbyLayer();
+  if (typeof clearTrailLayer === "function") clearTrailLayer();
   if (clearSelection) {
     state.selectedId = null;
     syncSelection();
@@ -1928,7 +2015,8 @@ function switchView(view) {
 }
 
 function updateTop() {
-  const calc = computeEv(state.ev);
+  const scn = typeof getScenario === "function" ? getScenario() : { rain: false, cold: false };
+  const calc = computeEv({ ...state.ev, scenarioRain: scn.rain, scenarioCold: scn.cold });
   const pillName = $("#evPillName");
   if (pillName) pillName.textContent = calc.vehicle.name;
   $("#evPillRange").textContent = `可用里程 ${Math.round(calc.usableRange)} km`;
@@ -2173,6 +2261,41 @@ function refreshAll() {
 
 /* ---------------- 事件 ---------------- */
 function wireEvents() {
+  /* F3：情境開關＋還原＋CWA Key＋天氣重試 */
+  $("#scenarioRain")?.addEventListener("change", (e) => {
+    if (typeof setScenario === "function") setScenario({ rain: e.target.checked });
+    persist(); refreshAll();
+  });
+  $("#scenarioCold")?.addEventListener("change", (e) => {
+    if (typeof setScenario === "function") setScenario({ cold: e.target.checked });
+    persist(); refreshAll();
+  });
+  $("#scenarioReset")?.addEventListener("click", () => {
+    if (typeof setScenario === "function") setScenario({ rain: false, cold: false });
+    persist(); refreshAll();
+  });
+  $("#cwaKeySave")?.addEventListener("click", () => {
+    const input = $("#cwaKeyInput");
+    if (input && typeof setCwaKey === "function") {
+      setCwaKey(input.value);
+      if (typeof clearWeatherCache === "function") clearWeatherCache();
+      toast(input.value.trim() ? "已儲存 CWA 授權碼，天氣將改用中央氣象署預報。" : "已清除 CWA 授權碼，改回 Open-Meteo 預報。");
+      refreshTripWeather(true);
+    }
+  });
+  /* 天氣重試按鈕（行程卡 #weatherWrap 與詳情卡 .pc-weather 共用，事件委派）： */
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest('[data-act="retry-weather"]');
+    if (!btn) return;
+    if (typeof clearWeatherCache === "function") clearWeatherCache();
+    const inDetail = btn.closest(".pc-weather");
+    if (inDetail && typeof loadDetailWeather === "function" && state.selectedId) {
+      loadDetailWeather(getPOI(state.selectedId));
+    } else if (typeof refreshTripWeather === "function") {
+      refreshTripWeather(true);
+    }
+  });
+
   $$(".tab").forEach((tab) => {
     tab.addEventListener("click", () => switchView(tab.dataset.view));
   });
@@ -2319,11 +2442,15 @@ function wireEvents() {
     state.osrm = {};
     persist();
     refreshAll();
+    renderGeoMarker();
+    $("#locateBtn")?.classList.remove("is-located");
     toast(`出發地改為「${startPoint().name}」`);
   });
 
   $("#locateBtn").addEventListener("click", () => {
-    if (!navigator.geolocation) { toast("瀏覽器不支援定位"); return; }
+    const btn = $("#locateBtn");
+    if (!navigator.geolocation) { toast("瀏覽器不支援定位，請改用手機 Chrome 或 Safari"); return; }
+    if (btn) btn.disabled = true;
     toast("正在取得目前位置…");
     navigator.geolocation.getCurrentPosition(
       (pos) => {
@@ -2338,10 +2465,25 @@ function wireEvents() {
         state.osrm = {};
         persist();
         refreshAll();
+        renderGeoMarker();
+        map?.flyTo([pos.coords.latitude, pos.coords.longitude], 14, { duration: 0.7 });
+        if (btn) { btn.disabled = false; btn.classList.add("is-located"); }
         toast("已將出發地設為目前位置");
       },
-      () => toast("無法取得位置，請確認瀏覽器定位權限"),
-      { enableHighAccuracy: true, timeout: 9000 }
+      (err) => {
+        if (btn) btn.disabled = false;
+        // GeolocationPositionError.code：1 拒絕授權、2 無法取得位置、3 逾時
+        if (err && err.code === 1) {
+          toast("已拒絕定位授權：請點網址列旁的定位圖示改為「允許」，再按一次定位");
+        } else if (err && err.code === 2) {
+          toast("無法取得位置：請確認手機已開啟定位（GPS），移到空曠處再按一次定位");
+        } else if (err && err.code === 3) {
+          toast("定位逾時（9 秒）：訊號較弱，請移到空曠處再按一次定位");
+        } else {
+          toast("無法取得位置，請確認瀏覽器定位權限");
+        }
+      },
+      { enableHighAccuracy: true, timeout: 9000, maximumAge: 0 }
     );
   });
 
@@ -2397,6 +2539,7 @@ function wireEvents() {
     if (act.dataset.act === "add") addStop(act.dataset.id);
     if (act.dataset.act === "nearby") setAnchorAndFood(act.dataset.id);
     if (act.dataset.act === "pick") selectPOI(act.dataset.id);
+    if (act.dataset.act === "trail-retry") { const rp = getPOI(act.dataset.id); if (rp) bindTrailToDetail(rp, { force: true }); }
   });
 
   $("#poiCardClose").addEventListener("click", () => closeDetail());
@@ -2540,7 +2683,18 @@ function init() {
   renderEvPanel();
   initMap();
   wireEvents();
+  /* F5：離線狀態橫幅（online／offline 事件＋初始狀態）。 */
+  const updateOnlineStatus = () => {
+    const banner = $("#offlineBanner");
+    if (banner) banner.hidden = navigator.onLine;
+    if (!navigator.onLine) toast("離線模式：顯示快取資料");
+  };
+  window.addEventListener("online", () => { updateOnlineStatus(); toast("已恢復連線，即時功能已恢復"); });
+  window.addEventListener("offline", updateOnlineStatus);
+  updateOnlineStatus();
   refreshAll();
+  renderGeoMarker();
+  if (state.startCustom && state.startCustom.id === "geo") $("#locateBtn")?.classList.add("is-located");
   if (state.itinerary.length) switchView("trip");
   else switchView("explore");
   if (state.startCustom) {
